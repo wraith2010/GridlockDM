@@ -29,6 +29,11 @@ export async function renderDmView({ code }) {
   ws.connect(code);
   bindSessionEvents(renderer, code, 'dm');
 
+  // Load existing map if already uploaded
+  if (session.mapImageUrl) {
+    renderer.loadMap(session.mapImageUrl, session.gridConfig);
+  }
+
   // Load roster
   await refreshRoster(session.id, renderer);
 
@@ -62,6 +67,10 @@ export async function renderPlayerView({ code }) {
 
   ws.connect(code);
   bindSessionEvents(renderer, code, 'player');
+
+  if (session.mapImageUrl) {
+    renderer.loadMap(session.mapImageUrl, session.gridConfig);
+  }
 
   await refreshRoster(session.id, renderer);
 
@@ -141,6 +150,10 @@ function bindSessionEvents(renderer, code, role) {
     renderer.showOverlay(overlay);
   });
 
+  ws.on('MAP_LOADED', ({ mapImageUrl, gridConfig }) => {
+    renderer.loadMap(mapImageUrl, gridConfig);
+  });
+
   ws.on('SESSION_ENDED', () => {
     toast('The session has ended.', 'info');
     ws.disconnect();
@@ -199,6 +212,15 @@ function dmShell(code) {
               📏 Ruler
             </button>
           </div>
+        </div>
+
+        <!-- Map upload -->
+        <div class="game-panel-section">
+          <div class="game-panel-label">Battlemap</div>
+          <input type="file" id="map-file-input" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3)" id="btn-upload-map">
+            🗺 Upload Map
+          </button>
         </div>
 
         <!-- Fog controls -->
@@ -495,6 +517,22 @@ function wireDmControls(session, renderer, code) {
   // Copy session code
   document.getElementById('session-code-display')?.addEventListener('click', () => {
     navigator.clipboard.writeText(code).then(() => toast(`Code ${code} copied!`, 'info'));
+  });
+
+  // Map upload
+  const mapInput = document.getElementById('map-file-input');
+  document.getElementById('btn-upload-map')?.addEventListener('click', () => mapInput?.click());
+  mapInput?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const result = await sessions.uploadMap(session.id, file);
+      renderer.loadMap(result.mapImageUrl, result.gridConfig);
+      toast('Map uploaded!', 'success');
+    } catch (err) {
+      toast(err.message || 'Map upload failed', 'error');
+    }
+    mapInput.value = '';
   });
 
   // Canvas: token selection → open panel

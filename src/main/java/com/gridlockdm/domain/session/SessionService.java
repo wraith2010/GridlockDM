@@ -13,9 +13,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
@@ -30,6 +33,7 @@ public class SessionService {
     private final InviteCodeGenerator        codeGenerator;
     private final JwtTokenProvider           jwtTokenProvider;
     private final SimpMessagingTemplate      messaging;
+    private final MapUploadService           mapUploadService;
 
     // ── Session lifecycle ─────────────────────────────────────────────────────
 
@@ -181,6 +185,26 @@ public class SessionService {
         return jwtTokenProvider.createObserverToken(sessionId, label);
     }
 
+    // ── Map upload ────────────────────────────────────────────────────────────
+
+    @Transactional
+    public Session uploadMap(UUID sessionId, User dm, MultipartFile file) throws IOException {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+
+        MapUploadService.UploadResult result = mapUploadService.store(file);
+        session.setMapImageUrl(result.url());
+        session.setGridConfig(result.gridConfig());
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+
+        broadcast(session.getInviteCode(), "MAP_LOADED",
+                new MapLoadedDto(result.url(), result.gridConfig()));
+
+        log.info("Map uploaded for session {}: {}", session.getInviteCode(), result.url());
+        return session;
+    }
+
     // ── Queries ───────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -262,6 +286,7 @@ public class SessionService {
 
     public record SessionEvent(String type, Object payload) {}
     public record InviteResultDto(String status, String sessionCode) {}
+    public record MapLoadedDto(String mapImageUrl, Map<String, Object> gridConfig) {}
 
     public record InviteDto(
             UUID   id,

@@ -144,6 +144,12 @@ export const sessions = {
 
   observerLink: (id, label) =>
     request('POST', `/api/sessions/${id}/observer-link`, { label }),
+
+  uploadMap: (id, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return upload(`/api/sessions/${id}/map`, fd);
+  },
 };
 
 export { ApiError };

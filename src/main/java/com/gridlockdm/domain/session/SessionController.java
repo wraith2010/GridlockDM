@@ -7,10 +7,13 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -113,6 +116,23 @@ public class SessionController {
         return ResponseEntity.noContent().build();
     }
 
+    // ── DM: upload battlemap ──────────────────────────────────────────────────
+
+    /**
+     * POST /api/sessions/{id}/map
+     * Multipart: file = image (JPEG / PNG / WebP / GIF)
+     * DM only. Saves the image, derives a default grid config, broadcasts MAP_LOADED.
+     */
+    @PostMapping(value = "/{id}/map", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<SessionInfoDto> uploadMap(
+            @PathVariable UUID id,
+            @RequestParam("file") MultipartFile file,
+            @AuthenticationPrincipal User dm) throws IOException {
+
+        Session session = sessionService.uploadMap(id, dm, file);
+        return ResponseEntity.ok(SessionInfoDto.from(session));
+    }
+
     // ── DM: session lifecycle ─────────────────────────────────────────────────
 
     @PostMapping("/{id}/start")
@@ -203,17 +223,21 @@ public class SessionController {
     }
 
     public record SessionInfoDto(
+            UUID   id,
             String name,
             String inviteCode,
             String inviteMode,
             String status,
-            String dmName
+            String dmName,
+            String mapImageUrl,
+            Object gridConfig
     ) {
         static SessionInfoDto from(Session s) {
             return new SessionInfoDto(
-                    s.getName(), s.getInviteCode(),
+                    s.getId(), s.getName(), s.getInviteCode(),
                     s.getInviteMode().name(), s.getStatus().name(),
-                    s.getDm().getDisplayName());
+                    s.getDm().getDisplayName(),
+                    s.getMapImageUrl(), s.getGridConfig());
         }
     }
 }

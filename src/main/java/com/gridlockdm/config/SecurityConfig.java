@@ -56,6 +56,9 @@ public class SecurityConfig {
                         .requestMatchers("/", "/index.html", "/js/**", "/css/**",
                                          "/assets/**", "/favicon.ico").permitAll()
 
+                        // Uploaded map images — public so players/observers can load them
+                        .requestMatchers("/uploads/maps/**").permitAll()
+
                         // Everything else requires authentication
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)

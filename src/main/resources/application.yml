@@ -54,6 +54,10 @@ gridlock:
     invite-code-length: 8        # e.g. WOLF-4271
     max-players-per-session: 10
 
+  uploads:
+    map-dir: ${MAP_UPLOAD_DIR:./uploads/maps}
+    map-url-prefix: /uploads/maps
+
 logging:
   level:
     com.gridlockdm: DEBUG
