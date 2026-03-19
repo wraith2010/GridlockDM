@@ -1,0 +1,219 @@
+package com.gridlockdm.domain.session;
+
+import com.gridlockdm.domain.session.SessionService.*;
+import com.gridlockdm.domain.user.User;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/sessions")
+@RequiredArgsConstructor
+public class SessionController {
+
+    private final SessionService sessionService;
+
+    // ── DM: create session ────────────────────────────────────────────────────
+
+    /**
+     * POST /api/sessions
+     * Body: { name, inviteMode }
+     */
+    @PostMapping
+    public ResponseEntity<SessionSummaryDto> create(
+            @Valid @RequestBody CreateSessionRequest req,
+            @AuthenticationPrincipal User dm) {
+
+        Session session = sessionService.createSession(dm, req.name(), req.inviteMode());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(SessionSummaryDto.from(session));
+    }
+
+    // ── Public: session info by invite code ───────────────────────────────────
+
+    /**
+     * GET /api/sessions/{code}/info
+     * Public — returns enough info to display the join screen before login.
+     */
+    @GetMapping("/{code}/info")
+    public ResponseEntity<SessionInfoDto> info(@PathVariable String code) {
+        Session session = sessionService.getSessionByCode(code);
+        return ResponseEntity.ok(SessionInfoDto.from(session));
+    }
+
+    // ── Player: request to join ───────────────────────────────────────────────
+
+    /**
+     * POST /api/sessions/{code}/join
+     * Body: { characterId }
+     */
+    @PostMapping("/{code}/join")
+    public ResponseEntity<JoinResponseDto> join(
+            @PathVariable String code,
+            @Valid @RequestBody JoinRequest req,
+            @AuthenticationPrincipal User player) {
+
+        JoinResult result = sessionService.requestJoin(code, player, req.characterId());
+
+        return switch (result) {
+            case JoinResult.Accepted a -> ResponseEntity.ok(
+                    new JoinResponseDto("ACCEPTED", null, SessionCharacterDto.from(a.sessionCharacter())));
+            case JoinResult.Pending p  -> ResponseEntity.accepted()
+                    .body(new JoinResponseDto("PENDING", p.invite().getId(), null));
+        };
+    }
+
+    // ── DM: manage pending invites ────────────────────────────────────────────
+
+    /**
+     * GET /api/sessions/{id}/invites/pending
+     */
+    @GetMapping("/{id}/invites/pending")
+    public ResponseEntity<List<InviteDto>> pendingInvites(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        return ResponseEntity.ok(
+                sessionService.getPendingInvites(id, dm)
+                              .stream()
+                              .map(InviteDto::from)
+                              .toList());
+    }
+
+    /**
+     * POST /api/sessions/invites/{inviteId}/accept
+     */
+    @PostMapping("/invites/{inviteId}/accept")
+    public ResponseEntity<SessionCharacterDto> accept(
+            @PathVariable UUID inviteId,
+            @AuthenticationPrincipal User dm) {
+
+        SessionCharacter sc = sessionService.acceptInvite(inviteId, dm);
+        return ResponseEntity.ok(SessionCharacterDto.from(sc));
+    }
+
+    /**
+     * POST /api/sessions/invites/{inviteId}/deny
+     */
+    @PostMapping("/invites/{inviteId}/deny")
+    public ResponseEntity<Void> deny(
+            @PathVariable UUID inviteId,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.denyInvite(inviteId, dm);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── DM: session lifecycle ─────────────────────────────────────────────────
+
+    @PostMapping("/{id}/start")
+    public ResponseEntity<SessionSummaryDto> start(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        return ResponseEntity.ok(SessionSummaryDto.from(sessionService.startSession(id, dm)));
+    }
+
+    @PostMapping("/{id}/end")
+    public ResponseEntity<SessionSummaryDto> end(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        return ResponseEntity.ok(SessionSummaryDto.from(sessionService.endSession(id, dm)));
+    }
+
+    // ── DM: observer token ────────────────────────────────────────────────────
+
+    /**
+     * POST /api/sessions/{id}/observer-link
+     * Body: { label }   e.g. "Table TV"
+     */
+    @PostMapping("/{id}/observer-link")
+    public ResponseEntity<Map<String, String>> observerLink(
+            @PathVariable UUID id,
+            @RequestBody Map<String, String> body,
+            @AuthenticationPrincipal User dm) {
+
+        String label = body.getOrDefault("label", "Observer");
+        String token = sessionService.generateObserverToken(id, dm, label);
+        return ResponseEntity.ok(Map.of("observerToken", token));
+    }
+
+    // ── DM: session roster ────────────────────────────────────────────────────
+
+    @GetMapping("/{id}/roster")
+    public ResponseEntity<List<SessionCharacterDto>> roster(@PathVariable UUID id) {
+        return ResponseEntity.ok(
+                sessionService.getSessionRoster(id)
+                              .stream()
+                              .map(SessionCharacterDto::from)
+                              .toList());
+    }
+
+    // ── DM: my sessions ──────────────────────────────────────────────────────
+
+    @GetMapping("/my")
+    public ResponseEntity<List<SessionSummaryDto>> mySessions(@AuthenticationPrincipal User dm) {
+        return ResponseEntity.ok(
+                sessionService.getDmSessions(dm.getId())
+                              .stream()
+                              .map(SessionSummaryDto::from)
+                              .toList());
+    }
+
+    // ── Request / Response DTOs ───────────────────────────────────────────────
+
+    public record CreateSessionRequest(
+            @NotBlank String name,
+            @NotNull  InviteMode inviteMode
+    ) {}
+
+    public record JoinRequest(@NotNull UUID characterId) {}
+
+    public record JoinResponseDto(
+            String status,               // ACCEPTED | PENDING
+            UUID   inviteId,             // populated when PENDING
+            SessionCharacterDto character // populated when ACCEPTED
+    ) {}
+
+    public record SessionSummaryDto(
+            UUID   id,
+            String name,
+            String inviteCode,
+            String inviteMode,
+            String status,
+            String dmName,
+            String createdAt
+    ) {
+        static SessionSummaryDto from(Session s) {
+            return new SessionSummaryDto(
+                    s.getId(), s.getName(), s.getInviteCode(),
+                    s.getInviteMode().name(), s.getStatus().name(),
+                    s.getDm().getDisplayName(), s.getCreatedAt().toString());
+        }
+    }
+
+    public record SessionInfoDto(
+            String name,
+            String inviteCode,
+            String inviteMode,
+            String status,
+            String dmName
+    ) {
+        static SessionInfoDto from(Session s) {
+            return new SessionInfoDto(
+                    s.getName(), s.getInviteCode(),
+                    s.getInviteMode().name(), s.getStatus().name(),
+                    s.getDm().getDisplayName());
+        }
+    }
+}

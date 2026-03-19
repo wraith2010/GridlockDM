@@ -1,0 +1,27 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE
+.idea/
+*.iml
+*.iws
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment — never commit secrets
+.env
+
+# Spring Boot
+spring-shell.log
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db

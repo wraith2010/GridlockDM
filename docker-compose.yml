@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: gridlockdm-postgres
+    environment:
+      POSTGRES_USER:     ${DB_USERNAME:-gridlock}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gridlock}
+      POSTGRES_DB:       gridlockdm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-gridlock} -d gridlockdm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gridlockdm-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USERNAME: ${DB_USERNAME:-gridlock}
+      DB_PASSWORD: ${DB_PASSWORD:-gridlock}
+      JWT_SECRET:  ${JWT_SECRET:-change-me-in-production-use-256-bit-random}
+      PORT:        ${PORT:-8080}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gridlockdm
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

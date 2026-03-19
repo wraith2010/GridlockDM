@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridlockDM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+  <!-- Ambient background grain -->
+  <div class="grain-overlay" aria-hidden="true"></div>
+
+  <!-- Top navigation bar (hidden on auth screens) -->
+  <nav class="topbar" id="topbar" hidden>
+    <a class="topbar-logo" href="#/dashboard">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5"/>
+        <polygon points="12,7 17,10 17,14 12,17 7,14 7,10"/>
+      </svg>
+      <span>GridlockDM</span>
+    </a>
+    <div class="topbar-links" id="topbar-links"></div>
+    <div class="topbar-user" id="topbar-user"></div>
+  </nav>
+
+  <!-- Main view container — router renders here -->
+  <main id="app"></main>
+
+  <!-- Toast notifications -->
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+  <!-- SockJS + STOMP for WebSocket -->
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+
+  <!-- App modules (ES modules) -->
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
