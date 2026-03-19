@@ -42,7 +42,7 @@ public class AuthService {
                 .role(UserRole.PLAYER)
                 .build();
 
-        userRepository.save(user);
+        user = userRepository.save(user);
         log.info("New user registered: {} ({})", user.getDisplayName(), user.getEmail());
 
         return buildResponse(user);
