@@ -43,7 +43,7 @@ pipeline {
                 branch 'main'
             }
             steps {
-                sshagent(credentials: ['ssh-deploy-key']) {
+                            sshagent(credentials: ['deploy-ssh-key']) {
                     sh """
                         JAR=\$(ls target/gridlockdm-*.jar | head -1)
                         scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
