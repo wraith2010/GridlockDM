@@ -45,10 +45,11 @@ pipeline {
                                     steps {
                                                         sshagent(credentials: ['ssh-deploy-gridlockdm']) {
                                                                                 sh """
-                                                                                                        JAR=\$(ls target/gridlockdm-*.jar | head -1)
-                                                                                                                                scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
-                                                                                                                                                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'sudo systemctl restart gridlockdm'
-                                                                                                                                                                            """
+                                                                                    JAR=\$(ls target/gridlockdm-*.jar | head -1)
+                                                                                    scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
+                                                                                    scp -o StrictHostKeyChecking=no docker-compose.yml ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/docker-compose.yml
+                                                                                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'cd ${DEPLOY_PATH} && sudo docker compose down && sudo docker compose up -d --build'
+                                                                                """
                                                         }
                                     }
                     }
