@@ -7,8 +7,9 @@ pipeline {
     }
 
     environment {
-        IMAGE_NAME = 'gridlockdm'
-        IMAGE_TAG  = "${env.BRANCH_NAME == 'main' ? 'latest' : env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+        DEPLOY_HOST = 'gridlockdm.1031f.com'
+        DEPLOY_PATH = '/opt/gridlockdm'
+        DEPLOY_USER = 'deploy'
     }
 
     stages {
@@ -37,26 +38,16 @@ pipeline {
             }
         }
 
-        stage('Docker Build') {
-            steps {
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
-            }
-        }
-
-        stage('Docker Push') {
+        stage('Deploy') {
             when {
                 branch 'main'
             }
             steps {
-                withCredentials([usernamePassword(
-                        credentialsId: 'docker-registry-credentials',
-                        usernameVariable: 'REGISTRY_USER',
-                        passwordVariable: 'REGISTRY_PASS')]) {
+                sshagent(credentials: ['ssh-deploy-key']) {
                     sh """
-                        echo "\$REGISTRY_PASS" | docker login -u "\$REGISTRY_USER" --password-stdin
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                        docker tag  ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
-                        docker push ${IMAGE_NAME}:latest
+                        JAR=\$(ls target/gridlockdm-*.jar | head -1)
+                        scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
+                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'sudo systemctl restart gridlockdm'
                     """
                 }
             }
