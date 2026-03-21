@@ -50,8 +50,9 @@ pipeline {
                                                                                     echo ">>> Copying JAR to server..."
                                                                                     scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
 
-                                                                                    echo ">>> Copying docker-compose.yml to server..."
+                                                                                    echo ">>> Copying docker-compose.yml and Dockerfile to server..."
                                                                                     scp -o StrictHostKeyChecking=no docker-compose.yml ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/docker-compose.yml
+                                                                                    scp -o StrictHostKeyChecking=no Dockerfile ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/Dockerfile
 
                                                                                     echo ">>> Stopping containers..."
                                                                                     ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'cd ${DEPLOY_PATH} && sudo docker compose down'
