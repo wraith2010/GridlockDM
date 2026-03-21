@@ -49,6 +49,7 @@ Using Docker Compose (recommended):
 docker compose up -d postgres
 ```
 
+
 Or create the database manually:
 
 ```sql
