@@ -48,7 +48,7 @@ gridlock:
 
   ddb:
     character-api-base: https://www.dndbeyond.com/character
-    request-timeout-ms: 5000
+    request-timeout-ms: 15000
 
   session:
     invite-code-length: 8        # e.g. WOLF-4271
