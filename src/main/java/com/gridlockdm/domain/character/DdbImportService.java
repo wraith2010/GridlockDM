@@ -81,6 +81,11 @@ public class DdbImportService {
                     "Character " + ddbCharacterId + " not found on D&D Beyond. " +
                     "Make sure the character is set to public visibility.");
         } catch (WebClientResponseException e) {
+            if (e.getStatusCode().value() == 500) {
+                throw new DdbCharacterNotFoundException(
+                        "Could not access character " + ddbCharacterId + " on D&D Beyond. " +
+                        "Make sure the character is set to public visibility in your D&D Beyond sharing settings.");
+            }
             throw new DdbImportException("D&D Beyond returned an error: " + e.getStatusCode(), e);
         } catch (Exception e) {
             throw new DdbImportException("Failed to import from D&D Beyond: " + e.getMessage(), e);
