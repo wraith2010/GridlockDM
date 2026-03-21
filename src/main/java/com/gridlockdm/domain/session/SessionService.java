@@ -205,6 +205,94 @@ public class SessionService {
         return session;
     }
 
+    // ── Fog of War ────────────────────────────────────────────────────────────
+
+    @Transactional
+    public Session revealAllFog(UUID sessionId, User dm, boolean revealed) {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+
+        Map<String, Object> cfg = session.getGridConfig();
+        if (cfg == null) throw new IllegalStateException("No map loaded — upload a map first");
+
+        int cols = ((Number) cfg.get("cols")).intValue();
+        int rows = ((Number) cfg.get("rows")).intValue();
+
+        Map<String, Boolean> fog = new java.util.HashMap<>();
+        for (int x = 0; x < cols; x++) {
+            for (int y = 0; y < rows; y++) {
+                fog.put(x + "," + y, revealed);
+            }
+        }
+        session.setFogState(fog);
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+
+        broadcast(session.getInviteCode(), "FOG_UPDATED", Map.of("cells", fog));
+        return session;
+    }
+
+    @Transactional
+    public Session updateFogCells(UUID sessionId, User dm, Map<String, Boolean> cells) {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+
+        if (session.getFogState() == null) session.setFogState(new java.util.HashMap<>());
+        session.getFogState().putAll(cells);
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+
+        broadcast(session.getInviteCode(), "FOG_UPDATED", Map.of("cells", cells));
+        return session;
+    }
+
+    // ── Grid config ───────────────────────────────────────────────────────────
+
+    @Transactional
+    public Session updateGridConfig(UUID sessionId, User dm, Map<String, Object> gridConfig) {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+        session.setGridConfig(gridConfig);
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+        broadcast(session.getInviteCode(), "GRID_UPDATED", gridConfig);
+        log.info("Grid config updated for session {}", session.getInviteCode());
+        return session;
+    }
+
+    // ── Zones ─────────────────────────────────────────────────────────────────
+
+    @Transactional
+    public Session updateZones(UUID sessionId, User dm, Map<String, String> patch) {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+
+        if (session.getZones() == null) {
+            session.setZones(new java.util.HashMap<>());
+        }
+        final Map<String, String> zones = session.getZones();
+        // "none" removes the zone; any other type paints it
+        patch.forEach((key, type) -> {
+            if ("none".equals(type)) zones.remove(key);
+            else zones.put(key, type);
+        });
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+        broadcast(session.getInviteCode(), "ZONES_UPDATED", session.getZones());
+        return session;
+    }
+
+    @Transactional
+    public Session clearZones(UUID sessionId, User dm) {
+        Session session = requireSession(sessionId);
+        requireDm(session, dm);
+        session.setZones(new java.util.HashMap<>());
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+        broadcast(session.getInviteCode(), "ZONES_UPDATED", session.getZones());
+        return session;
+    }
+
     // ── Queries ───────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)

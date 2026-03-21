@@ -48,6 +48,7 @@ gridlock:
 
   ddb:
     character-api-base: https://www.dndbeyond.com/character
+    character-service-base: https://character-service.dndbeyond.com/character/v5/character
     request-timeout-ms: 15000
 
   session:
@@ -57,6 +58,9 @@ gridlock:
   uploads:
     map-dir: ${MAP_UPLOAD_DIR:./uploads/maps}
     map-url-prefix: /uploads/maps
+
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
 
 logging:
   level:

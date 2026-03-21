@@ -2,10 +2,13 @@ FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
 
-RUN addgroup -S gridlock && adduser -S gridlock -G gridlock
+RUN addgroup -S gridlock && adduser -S gridlock -G gridlock && \
+    mkdir -p /app/uploads/maps && \
+    chown -R gridlock:gridlock /app
+
 USER gridlock
 
-COPY gridlockdm.jar app.jar
+COPY --chown=gridlock:gridlock gridlockdm*.jar app.jar
 
 EXPOSE 8080
 

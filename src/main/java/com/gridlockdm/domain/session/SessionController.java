@@ -116,6 +116,69 @@ public class SessionController {
         return ResponseEntity.noContent().build();
     }
 
+    // ── DM: fog of war ───────────────────────────────────────────────────────
+
+    @PostMapping("/{id}/fog/reveal-all")
+    public ResponseEntity<Void> revealAllFog(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.revealAllFog(id, dm, true);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/fog/hide-all")
+    public ResponseEntity<Void> hideAllFog(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.revealAllFog(id, dm, false);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{id}/fog")
+    public ResponseEntity<Void> updateFog(
+            @PathVariable UUID id,
+            @RequestBody Map<String, Boolean> cells,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.updateFogCells(id, dm, cells);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── DM: update grid config ────────────────────────────────────────────────
+
+    @PatchMapping("/{id}/grid")
+    public ResponseEntity<Void> updateGrid(
+            @PathVariable UUID id,
+            @RequestBody Map<String, Object> gridConfig,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.updateGridConfig(id, dm, gridConfig);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── DM: update zone cells ─────────────────────────────────────────────────
+
+    @DeleteMapping("/{id}/zones")
+    public ResponseEntity<Void> clearZones(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.clearZones(id, dm);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{id}/zones")
+    public ResponseEntity<Void> updateZones(
+            @PathVariable UUID id,
+            @RequestBody Map<String, String> zones,
+            @AuthenticationPrincipal User dm) {
+
+        sessionService.updateZones(id, dm, zones);
+        return ResponseEntity.noContent().build();
+    }
+
     // ── DM: upload battlemap ──────────────────────────────────────────────────
 
     /**
@@ -230,14 +293,16 @@ public class SessionController {
             String status,
             String dmName,
             String mapImageUrl,
-            Object gridConfig
+            Object gridConfig,
+            Object zones,
+            Object fogState
     ) {
         static SessionInfoDto from(Session s) {
             return new SessionInfoDto(
                     s.getId(), s.getName(), s.getInviteCode(),
                     s.getInviteMode().name(), s.getStatus().name(),
                     s.getDm().getDisplayName(),
-                    s.getMapImageUrl(), s.getGridConfig());
+                    s.getMapImageUrl(), s.getGridConfig(), s.getZones(), s.getFogState());
         }
     }
 }

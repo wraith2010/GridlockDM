@@ -32,6 +32,12 @@ public class MapUploadService {
     @Value("${gridlock.uploads.map-url-prefix:/uploads/maps}")
     private String urlPrefix;
 
+    private final GridDetectionService gridDetectionService;
+
+    public MapUploadService(GridDetectionService gridDetectionService) {
+        this.gridDetectionService = gridDetectionService;
+    }
+
     /**
      * Validates, saves the image, and derives a default grid config from its dimensions.
      * Returns the public URL path and the computed grid config.
@@ -59,31 +65,31 @@ public class MapUploadService {
         file.transferTo(dest);
         log.info("Map image saved: {}", dest);
 
-        Map<String, Object> gridConfig = defaultGridConfig(dest);
+        // Read image dimensions (needed for both detection conversion and default config)
+        BufferedImage img = ImageIO.read(dest.toFile());
+        int imgW = img != null ? img.getWidth()  : 0;
+        int imgH = img != null ? img.getHeight() : 0;
+
+        Map<String, Object> detected = gridDetectionService.detectGrid(dest, contentType);
+        Map<String, Object> gridConfig = (detected != null) ? detected : defaultGridConfig(imgW, imgH);
+
         String url = urlPrefix + "/" + filename;
         return new UploadResult(url, gridConfig);
     }
 
-    private Map<String, Object> defaultGridConfig(Path imagePath) {
-        try {
-            BufferedImage img = ImageIO.read(imagePath.toFile());
-            if (img == null) return null;
-
-            int cols = Math.max(1, img.getWidth()  / DEFAULT_CELL_PX);
-            int rows = Math.max(1, img.getHeight() / DEFAULT_CELL_PX);
-
-            return Map.of(
-                    "originX",    0,
-                    "originY",    0,
-                    "cellSizePx", DEFAULT_CELL_PX,
-                    "cols",       cols,
-                    "rows",       rows,
-                    "confidence", 0.0
-            );
-        } catch (IOException e) {
-            log.warn("Could not read image dimensions for grid config: {}", e.getMessage());
-            return null;
-        }
+    private Map<String, Object> defaultGridConfig(int imgW, int imgH) {
+        if (imgW == 0 || imgH == 0) return null;
+        int cols = Math.max(1, imgW / DEFAULT_CELL_PX);
+        int rows = Math.max(1, imgH / DEFAULT_CELL_PX);
+        return Map.of(
+                "marginLeft",   0,
+                "marginRight",  0,
+                "marginTop",    0,
+                "marginBottom", 0,
+                "cols",         cols,
+                "rows",         rows,
+                "confidence",   0.0
+        );
     }
 
     public record UploadResult(String url, Map<String, Object> gridConfig) {}

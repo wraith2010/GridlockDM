@@ -37,31 +37,32 @@ public class CharacterService {
     // ── Import: D&D Beyond API ────────────────────────────────────────────────
 
     @Transactional
-    public Character importFromDdb(String ddbCharacterId, User owner) {
-        // Prevent duplicate imports for the same DDB character
-        if (characterRepo.existsByOwnerIdAndDdbCharacterId(owner.getId(), ddbCharacterId)) {
-            // Re-sync the existing record instead of creating a duplicate
+    public Character importFromDdb(String shareLink, User owner) {
+        String characterId = ddbImportService.extractCharacterId(shareLink);
+
+        // Prevent duplicate imports — re-sync if already imported
+        if (characterRepo.existsByOwnerIdAndDdbCharacterId(owner.getId(), characterId)) {
             Character existing = characterRepo.findByOwnerIdOrderByUpdatedAtDesc(owner.getId())
                     .stream()
-                    .filter(c -> ddbCharacterId.equals(c.getDdbCharacterId()))
+                    .filter(c -> characterId.equals(c.getDdbCharacterId()))
                     .findFirst()
                     .orElseThrow();
-            return syncFromDdb(existing, ddbCharacterId);
+            return syncFromDdb(existing, shareLink);
         }
 
-        Character character = ddbImportService.fetchAndMap(ddbCharacterId, owner);
+        Character character = ddbImportService.fetchAndMap(shareLink, owner);
         characterRepo.save(character);
-        log.info("Imported DDB character {} for user {}", ddbCharacterId, owner.getEmail());
+        log.info("Imported DDB character {} for user {}", characterId, owner.getEmail());
         return character;
     }
 
     /** Re-fetch from DDB and update an existing character record. */
     @Transactional
-    public Character syncFromDdb(Character existing, String ddbCharacterId) {
-        ddbImportService.updateFromDdb(existing, ddbCharacterId);
+    public Character syncFromDdb(Character existing, String shareLink) {
+        ddbImportService.updateFromDdb(existing, shareLink);
         existing.setUpdatedAt(java.time.Instant.now());
         characterRepo.save(existing);
-        log.info("Synced DDB character {}", ddbCharacterId);
+        log.info("Synced DDB character {}", existing.getDdbCharacterId());
         return existing;
     }
 

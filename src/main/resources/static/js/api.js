@@ -94,8 +94,8 @@ export const characters = {
   createManual: (dto) =>
     request('POST', '/api/characters/manual', dto),
 
-  importDdb: (characterId) =>
-    request('POST', '/api/characters/import/ddb', { characterId }),
+  importDdb: (shareLink) =>
+    request('POST', '/api/characters/import/ddb', { shareLink }),
 
   importPdf: (file) => {
     const fd = new FormData();
@@ -150,6 +150,24 @@ export const sessions = {
     fd.append('file', file);
     return upload(`/api/sessions/${id}/map`, fd);
   },
+
+  updateGrid: (id, config) =>
+    request('PATCH', `/api/sessions/${id}/grid`, config),
+
+  updateZones: (id, zones) =>
+    request('PATCH', `/api/sessions/${id}/zones`, zones),
+
+  clearZones: (id) =>
+    request('DELETE', `/api/sessions/${id}/zones`),
+
+  revealAllFog: (id) =>
+    request('POST', `/api/sessions/${id}/fog/reveal-all`),
+
+  hideAllFog: (id) =>
+    request('POST', `/api/sessions/${id}/fog/hide-all`),
+
+  updateFog: (id, cells) =>
+    request('PATCH', `/api/sessions/${id}/fog`, cells),
 };
 
 export { ApiError };

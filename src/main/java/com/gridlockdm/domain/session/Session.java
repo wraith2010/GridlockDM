@@ -56,6 +56,11 @@ public class Session {
     @Column(name = "fog_state", columnDefinition = "jsonb")
     private Map<String, Boolean> fogState;
 
+    /** Per-cell zone types — key "x,y" → zone type name (e.g. "fire", "difficult") */
+    @Type(JsonType.class)
+    @Column(name = "zones", columnDefinition = "jsonb")
+    private Map<String, String> zones;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     @Builder.Default
     private Instant createdAt = Instant.now();

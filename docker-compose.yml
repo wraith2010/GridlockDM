@@ -29,12 +29,16 @@ services:
     environment:
       DB_USERNAME: ${DB_USERNAME:-gridlock}
       DB_PASSWORD: ${DB_PASSWORD:-gridlock}
-      JWT_SECRET:  ${JWT_SECRET:-change-me-in-production-use-256-bit-random}
-      PORT:        ${PORT:-8080}
+      JWT_SECRET:       ${JWT_SECRET:-change-me-in-production-use-256-bit-random}
+      PORT:             ${PORT:-8080}
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gridlockdm
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - map_uploads:/app/uploads
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  map_uploads:

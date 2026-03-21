@@ -45,12 +45,12 @@ public class CharacterController {
         return ResponseEntity.status(HttpStatus.CREATED).body(CharacterDetailDto.from(c));
     }
 
-    /** POST /api/characters/import/ddb — import from D&D Beyond by character ID */
+    /** POST /api/characters/import/ddb — import from D&D Beyond via share link or character ID */
     @PostMapping("/import/ddb")
     public ResponseEntity<CharacterDetailDto> importDdb(
             @RequestBody DdbImportRequest req,
             @AuthenticationPrincipal User user) {
-        Character c = characterService.importFromDdb(req.characterId(), user);
+        Character c = characterService.importFromDdb(req.shareLink(), user);
         return ResponseEntity.status(HttpStatus.CREATED).body(CharacterDetailDto.from(c));
     }
 
@@ -83,7 +83,7 @@ public class CharacterController {
 
     // ── DTOs ──────────────────────────────────────────────────────────────────
 
-    public record DdbImportRequest(String characterId) {}
+    public record DdbImportRequest(String shareLink) {}
 
     /** Lightweight card — used in character picker lists */
     public record CharacterSummaryDto(

@@ -2,6 +2,16 @@
 // Coordinate system: all game state is in grid-cell units.
 // Pixel positions are derived at render time from the viewport transform.
 
+export const ZONE_TYPES = {
+  difficult: { color: '#8B4513', label: 'Difficult Terrain' },
+  fire:      { color: '#FF4500', label: 'Fire' },
+  water:     { color: '#1E90FF', label: 'Water' },
+  ice:       { color: '#87CEEB', label: 'Ice' },
+  darkness:  { color: '#1a0a2e', label: 'Magical Darkness' },
+  web:       { color: '#C0C0C0', label: 'Web' },
+  poison:    { color: '#32CD32', label: 'Poison' },
+};
+
 export class Renderer {
   constructor(canvas, options = {}) {
     this.canvas  = canvas;
@@ -18,21 +28,27 @@ export class Renderer {
     this.panY  = 0;
 
     // Grid config (set when map is loaded)
-    this.gridConfig = null;   // { originX, originY, cellSizePx, cols, rows }
+    this.gridConfig = null;   // { originX, originY, cellSizePx, cols, rows, confidence }
 
     // Game state
     this.mapImage    = null;
     this.tokens      = new Map();   // id → token object
     this.fogCells    = new Map();   // "x,y" → bool (true = revealed)
-    this.zones       = [];
+    this.zoneCells   = new Map();   // "x,y" → zone type string
     this.overlays    = [];
     this.activeTurn  = null;
     this.activeTool  = 'move';
+    this.activeZoneType = 'difficult';
 
     // Interaction state
     this.isDragging  = false;
     this.dragStart   = { x: 0, y: 0 };
     this.selectedId  = null;
+    this.hoveredCell = null;         // { x, y } grid cell under cursor
+    this._dragToken  = null;
+    this._painting   = false;        // fog/zone brush active
+    this._paintValue = null;         // what we're painting (bool for fog, string for zone)
+    this._paintBatch = {};           // cells changed this stroke, sent on mouseup
     this.eventHandlers = {};
 
     this._resizeObserver = new ResizeObserver(() => this._resize());
@@ -52,9 +68,18 @@ export class Renderer {
     img.src    = imageUrl;
   }
 
+  /** Update grid config and re-render (used by live grid editor) */
+  updateGridConfig(config) {
+    this.gridConfig = config;
+  }
+
   setTool(tool) {
     this.activeTool = tool;
     this.canvas.style.cursor = tool === 'move' ? 'grab' : 'crosshair';
+  }
+
+  setZoneType(type) {
+    this.activeZoneType = type;
   }
 
   addToken(sc) {
@@ -117,6 +142,20 @@ export class Renderer {
     }
   }
 
+  /** Update zone cells — zones is an object { "x,y": zoneType } */
+  updateZones(zones) {
+    if (!zones) return;
+    Object.entries(zones).forEach(([key, type]) => {
+      if (type && type !== 'none') this.zoneCells.set(key, type);
+      else this.zoneCells.delete(key);
+    });
+  }
+
+  /** Clear all zone cells */
+  clearZones() {
+    this.zoneCells.clear();
+  }
+
   showOverlay(overlay) {
     this.overlays.push({ ...overlay, startTime: Date.now() });
     setTimeout(() => {
@@ -124,7 +163,7 @@ export class Renderer {
     }, overlay.duration || 3000);
   }
 
-  /** Register event handler: 'tokenSelected' | 'tokenMoved' */
+  /** Register event handler: 'tokenSelected' | 'tokenMoved' | 'fogPainted' | 'zonesPainted' */
   on(event, fn) {
     if (!this.eventHandlers[event]) this.eventHandlers[event] = [];
     this.eventHandlers[event].push(fn);
@@ -162,19 +201,22 @@ export class Renderer {
       ctx.fillRect(0, 0, canvas.width / zoom, canvas.height / zoom);
     }
 
-    // 2. Zones
+    // 2. Zone fills
     this._drawZones();
 
     // 3. Grid overlay
     if (this.gridConfig) this._drawGrid();
 
-    // 4. Fog of War (players & observer only — DM sees a dim overlay)
+    // 4. Fog of War
     this._drawFog();
 
-    // 5. Tokens
+    // 5. Hover highlight (DM only)
+    if (this.hoveredCell && this.options.role === 'dm') this._drawHover();
+
+    // 6. Tokens
     this._drawTokens();
 
-    // 6. Overlays (AoE, movement range, etc.)
+    // 7. Overlays
     this._drawOverlays();
 
     ctx.restore();
@@ -182,27 +224,60 @@ export class Renderer {
 
   // ── Drawing helpers ─────────────────────────────────────────────
 
+  /** Returns the natural image size (for grid panel auto-calc) */
+  getImageSize() {
+    return this.mapImage
+      ? { width: this.mapImage.width, height: this.mapImage.height }
+      : null;
+  }
+
+  /**
+   * Derive pixel metrics from the current gridConfig.
+   * Supports both the new margin-based format and the legacy originX/cellSizePx format.
+   * Returns { originX, originY, cellW, cellH, cols, rows } or null if not ready.
+   */
+  _gridMetrics() {
+    if (!this.gridConfig) return null;
+    const cfg = this.gridConfig;
+
+    // New margin-based format
+    if (cfg.marginLeft !== undefined || cfg.marginTop !== undefined) {
+      if (!this.mapImage) return null;
+      const { marginLeft = 0, marginRight = 0, marginTop = 0, marginBottom = 0,
+              cols = 1, rows = 1 } = cfg;
+      const cellW = (this.mapImage.width  - marginLeft - marginRight) / cols;
+      const cellH = (this.mapImage.height - marginTop  - marginBottom) / rows;
+      return { originX: marginLeft, originY: marginTop, cellW, cellH, cols, rows };
+    }
+
+    // Legacy format: { originX, originY, cellSizePx, cols, rows }
+    const { originX = 0, originY = 0, cellSizePx = 50, cols = 20, rows = 15 } = cfg;
+    return { originX, originY, cellW: cellSizePx, cellH: cellSizePx, cols, rows };
+  }
+
   _drawGrid() {
-    const { originX, originY, cellSizePx, cols, rows } = this.gridConfig;
+    const m = this._gridMetrics();
+    if (!m) return;
+    const { originX, originY, cellW, cellH, cols, rows } = m;
     const ctx = this.ctx;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(201, 168, 76, 0.18)';
-    ctx.lineWidth   = 0.5 / this.zoom;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.lineWidth   = 1 / this.zoom;
 
     for (let x = 0; x <= cols; x++) {
-      const px = originX + x * cellSizePx;
+      const px = originX + x * cellW;
       ctx.beginPath();
       ctx.moveTo(px, originY);
-      ctx.lineTo(px, originY + rows * cellSizePx);
+      ctx.lineTo(px, originY + rows * cellH);
       ctx.stroke();
     }
 
     for (let y = 0; y <= rows; y++) {
-      const py = originY + y * cellSizePx;
+      const py = originY + y * cellH;
       ctx.beginPath();
       ctx.moveTo(originX, py);
-      ctx.lineTo(originX + cols * cellSizePx, py);
+      ctx.lineTo(originX + cols * cellW, py);
       ctx.stroke();
     }
 
@@ -210,12 +285,12 @@ export class Renderer {
   }
 
   _drawFog() {
-    if (!this.gridConfig) return;
-    const { originX, originY, cellSizePx, cols, rows } = this.gridConfig;
+    const m = this._gridMetrics();
+    if (!m) return;
+    const { originX, originY, cellW, cellH, cols, rows } = m;
     const ctx  = this.ctx;
     const isDm = this.options.role === 'dm';
 
-    // DM: very dim veil over hidden cells; others: full black
     ctx.fillStyle = isDm ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.98)';
 
     for (let x = 0; x < cols; x++) {
@@ -223,38 +298,88 @@ export class Renderer {
         const revealed = this.fogCells.get(`${x},${y}`);
         if (!revealed) {
           ctx.fillRect(
-            originX + x * cellSizePx,
-            originY + y * cellSizePx,
-            cellSizePx, cellSizePx
+            originX + x * cellW,
+            originY + y * cellH,
+            cellW, cellH
           );
         }
       }
     }
   }
 
+  _drawZones() {
+    const m = this._gridMetrics();
+    if (!m) return;
+    const { originX, originY, cellW, cellH } = m;
+    const ctx = this.ctx;
+
+    ctx.save();
+    for (const [key, type] of this.zoneCells) {
+      const def = ZONE_TYPES[type];
+      if (!def) continue;
+      const [gx, gy] = key.split(',').map(Number);
+      const px = originX + gx * cellW;
+      const py = originY + gy * cellH;
+
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle   = def.color;
+      ctx.fillRect(px, py, cellW, cellH);
+
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth   = 1 / this.zoom;
+      ctx.strokeRect(px + 0.5, py + 0.5, cellW - 1, cellH - 1);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  _drawHover() {
+    const m = this._gridMetrics();
+    if (!m || !this.hoveredCell) return;
+    const { originX, originY, cellW, cellH } = m;
+    const { x, y } = this.hoveredCell;
+    const ctx = this.ctx;
+
+    let color = 'rgba(255,255,255,0.15)';
+    if (this.activeTool === 'fog')  color = 'rgba(0, 120, 255, 0.25)';
+    if (this.activeTool === 'zone') {
+      const def = ZONE_TYPES[this.activeZoneType];
+      color = def ? `${def.color}55` : 'rgba(255,120,0,0.25)';
+    }
+
+    ctx.save();
+    ctx.fillStyle   = color;
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth   = 1.5 / this.zoom;
+    ctx.fillRect(originX + x * cellW, originY + y * cellH, cellW, cellH);
+    ctx.strokeRect(originX + x * cellW + 0.5, originY + y * cellH + 0.5, cellW - 1, cellH - 1);
+    ctx.restore();
+  }
+
   _drawTokens() {
-    const { ctx }      = this;
-    const cellSize     = this.gridConfig?.cellSizePx || 50;
-    const { originX = 0, originY = 0 } = this.gridConfig || {};
+    const { ctx } = this;
+    const m = this._gridMetrics();
+    if (!m) return;
+    const { originX, originY, cellW, cellH } = m;
+    const cellSize = Math.min(cellW, cellH);
 
     for (const token of this.tokens.values()) {
       if (token.x == null || token.y == null) continue;
 
-      const px  = originX + token.x * cellSize;
-      const py  = originY + token.y * cellSize;
+      const px  = originX + token.x * cellW;
+      const py  = originY + token.y * cellH;
       const r   = cellSize * 0.42;
-      const cx  = px + cellSize / 2;
-      const cy  = py + cellSize / 2;
+      const cx  = px + cellW / 2;
+      const cy  = py + cellH / 2;
 
       ctx.save();
 
-      // Glow ring for active turn
       if (token.id === this.activeTurn) {
         ctx.shadowColor = '#c9a84c';
         ctx.shadowBlur  = 14 / this.zoom;
       }
 
-      // Token circle
       const color = this._tokenColor(token);
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -265,7 +390,6 @@ export class Renderer {
       ctx.stroke();
       ctx.shadowBlur  = 0;
 
-      // Token avatar or initials
       if (token.avatarImg) {
         ctx.save();
         ctx.beginPath();
@@ -281,7 +405,6 @@ export class Renderer {
         ctx.fillText(_initials(token.name), cx, cy);
       }
 
-      // Condition dot cluster (small dots below token)
       if (token.conditions?.length) {
         const dotR = 3 / this.zoom;
         const gap  = 7 / this.zoom;
@@ -294,12 +417,11 @@ export class Renderer {
         });
       }
 
-      // HP bar under token (if HP tracked)
       if (token.maxHp && token.currentHp != null) {
-        const barW = cellSize * 0.8;
+        const barW = cellW * 0.8;
         const barH = 3 / this.zoom;
-        const barX = px + (cellSize - barW) / 2;
-        const barY = py + cellSize - barH - 2 / this.zoom;
+        const barX = px + (cellW - barW) / 2;
+        const barY = py + cellH - barH - 2 / this.zoom;
         const pct  = Math.max(0, Math.min(1, token.currentHp / token.maxHp));
 
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -312,35 +434,7 @@ export class Renderer {
     }
   }
 
-  _drawZones() {
-    for (const zone of this.zones) {
-      const { points, color, label } = zone;
-      if (!points?.length) continue;
-      const ctx = this.ctx;
-      const cellSize = this.gridConfig?.cellSizePx || 50;
-      const { originX = 0, originY = 0 } = this.gridConfig || {};
-
-      ctx.save();
-      ctx.globalAlpha = 0.3;
-      ctx.fillStyle   = color || 'rgba(255, 120, 0, 0.4)';
-      ctx.beginPath();
-      points.forEach(([gx, gy], i) => {
-        const px = originX + gx * cellSize;
-        const py = originY + gy * cellSize;
-        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-      });
-      ctx.closePath();
-      ctx.fill();
-      ctx.globalAlpha  = 0.8;
-      ctx.strokeStyle  = color || 'rgba(255,120,0,0.8)';
-      ctx.lineWidth    = 1.5 / this.zoom;
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
   _drawOverlays() {
-    // Placeholder — AoE, movement range, death effects go here
     for (const overlay of this.overlays) {
       if (overlay.type === 'MOVEMENT_RANGE') {
         this._drawMovementRange(overlay);
@@ -350,8 +444,9 @@ export class Renderer {
 
   _drawMovementRange(overlay) {
     const { cells, color } = overlay;
-    if (!cells || !this.gridConfig) return;
-    const { originX, originY, cellSizePx } = this.gridConfig;
+    const m = this._gridMetrics();
+    if (!cells || !m) return;
+    const { originX, originY, cellW, cellH } = m;
     const ctx = this.ctx;
 
     ctx.save();
@@ -359,9 +454,9 @@ export class Renderer {
     ctx.fillStyle   = color || '#3498db';
     cells.forEach(([gx, gy]) => {
       ctx.fillRect(
-        originX + gx * cellSizePx,
-        originY + gy * cellSizePx,
-        cellSizePx, cellSizePx
+        originX + gx * cellW,
+        originY + gy * cellH,
+        cellW, cellH
       );
     });
     ctx.restore();
@@ -379,8 +474,8 @@ export class Renderer {
     this.canvas.addEventListener('mousemove', this._onMouseMove);
     this.canvas.addEventListener('mouseup',   this._onMouseUp);
     this.canvas.addEventListener('wheel',     this._onWheel, { passive: false });
+    this.canvas.addEventListener('mouseleave', () => { this.hoveredCell = null; });
 
-    // Touch support (pinch to zoom)
     this.canvas.addEventListener('touchstart',  this._handleTouchStart.bind(this),  { passive: false });
     this.canvas.addEventListener('touchmove',   this._handleTouchMove.bind(this),   { passive: false });
     this.canvas.addEventListener('touchend',    this._handleTouchEnd.bind(this));
@@ -388,9 +483,9 @@ export class Renderer {
 
   _handleMouseDown(e) {
     const world = this._screenToWorld(e.offsetX, e.offsetY);
+    const cell  = this._worldToCell(world.x, world.y);
 
     if (this.activeTool === 'move') {
-      // Check if clicking on a token
       const hit = this._hitTestToken(world.x, world.y);
       if (hit) {
         this.selectedId = hit.id;
@@ -403,19 +498,52 @@ export class Renderer {
         this.dragStart   = { x: e.clientX - this.panX, y: e.clientY - this.panY };
       }
     }
+
+    if (this.activeTool === 'fog' && this.options.role === 'dm' && cell) {
+      const key     = `${cell.x},${cell.y}`;
+      const current = this.fogCells.get(key);
+      this._paintValue = !current;   // toggle: start painting opposite of clicked cell
+      this._painting   = true;
+      this._paintBatch = {};
+      this._applyFogCell(cell.x, cell.y);
+    }
+
+    if (this.activeTool === 'zone' && this.options.role === 'dm' && cell) {
+      const key     = `${cell.x},${cell.y}`;
+      const current = this.zoneCells.get(key);
+      // If clicking on same zone type, erase; otherwise paint
+      this._paintValue = (current === this.activeZoneType) ? 'none' : this.activeZoneType;
+      this._painting   = true;
+      this._paintBatch = {};
+      this._applyZoneCell(cell.x, cell.y);
+    }
   }
 
   _handleMouseMove(e) {
+    const world = this._screenToWorld(e.offsetX, e.offsetY);
+    const cell  = this._worldToCell(world.x, world.y);
+
+    // Update hover cell
+    if (cell && this.gridConfig) {
+      const { cols, rows } = this.gridConfig;
+      this.hoveredCell = (cell.x >= 0 && cell.x < cols && cell.y >= 0 && cell.y < rows)
+        ? cell : null;
+    }
+
     if (this.isDragging) {
       this.panX = e.clientX - this.dragStart.x;
       this.panY = e.clientY - this.dragStart.y;
     }
 
     if (this._dragToken && this.options.role === 'dm') {
-      const world = this._screenToWorld(e.offsetX, e.offsetY);
-      const cell  = this._worldToCell(world.x, world.y);
-      this._dragToken.x = cell.x;
-      this._dragToken.y = cell.y;
+      const c = this._worldToCell(world.x, world.y);
+      this._dragToken.x = c.x;
+      this._dragToken.y = c.y;
+    }
+
+    if (this._painting && cell) {
+      if (this.activeTool === 'fog')  this._applyFogCell(cell.x, cell.y);
+      if (this.activeTool === 'zone') this._applyZoneCell(cell.x, cell.y);
     }
   }
 
@@ -424,10 +552,41 @@ export class Renderer {
       const world = this._screenToWorld(e.offsetX, e.offsetY);
       const cell  = this._worldToCell(world.x, world.y);
       this._emit('tokenMoved', { tokenId: this._dragToken.id, x: cell.x, y: cell.y });
-      // ws.send is called by the game view that listens to 'tokenMoved'
     }
+
+    if (this._painting) {
+      if (this.activeTool === 'fog' && Object.keys(this._paintBatch).length) {
+        this._emit('fogPainted', { ...this._paintBatch });
+      }
+      if (this.activeTool === 'zone' && Object.keys(this._paintBatch).length) {
+        this._emit('zonesPainted', { ...this._paintBatch });
+      }
+      this._painting   = false;
+      this._paintValue = null;
+      this._paintBatch = {};
+    }
+
     this.isDragging = false;
     this._dragToken  = null;
+  }
+
+  _applyFogCell(x, y) {
+    if (!this.gridConfig) return;
+    const { cols, rows } = this.gridConfig;
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return;
+    const key = `${x},${y}`;
+    this.fogCells.set(key, this._paintValue);
+    this._paintBatch[key] = this._paintValue;
+  }
+
+  _applyZoneCell(x, y) {
+    if (!this.gridConfig) return;
+    const { cols, rows } = this.gridConfig;
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return;
+    const key = `${x},${y}`;
+    if (this._paintValue === 'none') this.zoneCells.delete(key);
+    else this.zoneCells.set(key, this._paintValue);
+    this._paintBatch[key] = this._paintValue;
   }
 
   _handleWheel(e) {
@@ -440,7 +599,6 @@ export class Renderer {
     this.panY = e.offsetY - wy * this.zoom;
   }
 
-  // Simple pinch-to-zoom
   _handleTouchStart(e) {
     if (e.touches.length === 2) {
       this._pinchDist = _touchDist(e.touches);
@@ -466,22 +624,23 @@ export class Renderer {
   }
 
   _worldToCell(wx, wy) {
-    if (!this.gridConfig) return { x: 0, y: 0 };
-    const { originX, originY, cellSizePx } = this.gridConfig;
+    const m = this._gridMetrics();
+    if (!m) return null;
     return {
-      x: Math.floor((wx - originX) / cellSizePx),
-      y: Math.floor((wy - originY) / cellSizePx),
+      x: Math.floor((wx - m.originX) / m.cellW),
+      y: Math.floor((wy - m.originY) / m.cellH),
     };
   }
 
   _hitTestToken(wx, wy) {
-    if (!this.gridConfig) return null;
-    const { originX, originY, cellSizePx } = this.gridConfig;
+    const m = this._gridMetrics();
+    if (!m) return null;
+    const { originX, originY, cellW, cellH } = m;
     for (const token of this.tokens.values()) {
       if (token.x == null) continue;
-      const tx = originX + token.x * cellSizePx;
-      const ty = originY + token.y * cellSizePx;
-      if (wx >= tx && wx < tx + cellSizePx && wy >= ty && wy < ty + cellSizePx) {
+      const tx = originX + token.x * cellW;
+      const ty = originY + token.y * cellH;
+      if (wx >= tx && wx < tx + cellW && wy >= ty && wy < ty + cellH) {
         return token;
       }
     }

@@ -27,21 +27,36 @@ export function renderCharacterImport() {
       <div id="tab-ddb" class="tab-panel">
         <div class="card">
           <div class="card-title">Import from D&amp;D Beyond</div>
-          <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--sp-6)">
-            Enter your character ID from the D&amp;D Beyond URL.
-            Your character must be set to <strong>public visibility</strong> on D&amp;D Beyond.
-          </p>
-          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:var(--sp-5);
-                    background:var(--bg-raised);border:1px solid var(--border);
-                    border-radius:var(--radius);padding:var(--sp-3) var(--sp-4)">
-            📌 URL format: <code style="color:var(--gold)">dndbeyond.com/characters/<strong>12345678</strong></code>
+          <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--sp-5)">
+            Paste your D&amp;D Beyond character share link. Works with both public characters
+            and privately shared characters.
           </p>
 
+          <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:var(--sp-5);
+                      background:var(--bg-raised);border:1px solid var(--border);
+                      border-radius:var(--radius);padding:var(--sp-3) var(--sp-4);
+                      display:flex;flex-direction:column;gap:var(--sp-2)">
+            <div>
+              🔗 <strong style="color:var(--text-secondary)">Share link</strong>
+              <span style="color:var(--text-muted)"> (works for private characters):</span><br>
+              <code style="color:var(--gold)">dndbeyond.com/characters/123140741/<strong>QEJoax</strong></code>
+            </div>
+            <div>
+              🌐 <strong style="color:var(--text-secondary)">Public URL or bare ID</strong>
+              <span style="color:var(--text-muted)"> also accepted:</span><br>
+              <code style="color:var(--gold)">dndbeyond.com/characters/<strong>123140741</strong></code>
+            </div>
+            <div style="margin-top:var(--sp-1);padding-top:var(--sp-2);border-top:1px solid var(--border-dim);
+                        font-size:0.78rem">
+              💡 Get a share link: open your character on D&amp;D Beyond → <strong>Manage</strong> → <strong>Share</strong>
+            </div>
+          </div>
+
           <div class="field">
-            <label for="ddb-id">Character ID</label>
-            <input id="ddb-id" type="text" placeholder="e.g. 87654321" inputmode="numeric"
-              style="font-family:var(--font-mono);font-size:1.1rem;letter-spacing:0.05em">
-            <span class="field-hint">Found in the URL on your D&amp;D Beyond character page</span>
+            <label for="ddb-link">Share Link or Character ID</label>
+            <input id="ddb-link" type="text"
+              placeholder="https://www.dndbeyond.com/characters/123140741/QEJoax"
+              style="font-family:var(--font-mono);font-size:0.9rem">
           </div>
 
           <div id="ddb-error" class="field-error mt-4" hidden></div>
@@ -198,12 +213,13 @@ function wireTabSwitcher() {
 
 function wireDdbImport() {
   const btn   = document.getElementById('btn-import-ddb');
+  const input = document.getElementById('ddb-link');
   const errEl = document.getElementById('ddb-error');
 
   btn.addEventListener('click', async () => {
-    const id = document.getElementById('ddb-id').value.trim();
-    if (!id) {
-      document.getElementById('ddb-id').focus();
+    const shareLink = input.value.trim();
+    if (!shareLink) {
+      input.focus();
       return;
     }
 
@@ -211,7 +227,7 @@ function wireDdbImport() {
     setLoading(btn, true, 'Fetching from D&D Beyond…');
 
     try {
-      const char = await characters.importDdb(id);
+      const char = await characters.importDdb(shareLink);
       toast(`Imported ${char.name}! 🎲`, 'success');
       navigate('/dashboard');
     } catch (err) {

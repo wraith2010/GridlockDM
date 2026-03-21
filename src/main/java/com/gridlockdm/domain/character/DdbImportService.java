@@ -12,24 +12,30 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Fetches character data from the D&D Beyond public character JSON endpoint.
+ * Fetches character data from D&D Beyond.
  *
- * Endpoint: GET https://www.dndbeyond.com/character/{characterId}/json
+ * Accepts either a share link or a bare character ID:
+ *   https://www.dndbeyond.com/characters/123140741/QEJoax  (shared — private characters)
+ *   https://www.dndbeyond.com/characters/123140741          (public character URL)
+ *   123140741                                                (bare numeric ID)
  *
- * This endpoint is publicly accessible for characters set to public visibility.
- * The response is a large JSON blob — we extract the fields we care about and
- * store the full blob in raw_source for future re-syncs.
- *
- * NOTE: D&D Beyond has not published an official API. This uses their
- * unofficial public endpoint. If they add auth requirements in the future,
- * players will need to supply a token or fall back to PDF import.
+ * Strategy:
+ *  1. Parse the input to extract characterId and optional shareKey.
+ *  2. If a shareKey is present, try the character service API with Bearer auth.
+ *  3. Fall back to the public JSON endpoint for characters without a share key
+ *     or if the character service call fails.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DdbImportService {
+
+    private static final Pattern SHARE_LINK_PATTERN =
+            Pattern.compile(".*/characters/(\\d+)(?:/([A-Za-z0-9_=-]+))?.*");
 
     private final WebClient.Builder webClientBuilder;
     private final ObjectMapper      objectMapper;
@@ -37,32 +43,119 @@ public class DdbImportService {
     @Value("${gridlock.ddb.character-api-base}")
     private String ddbApiBase;
 
+    @Value("${gridlock.ddb.character-service-base}")
+    private String characterServiceBase;
+
     @Value("${gridlock.ddb.request-timeout-ms}")
     private long timeoutMs;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    public Character fetchAndMap(String ddbCharacterId, User owner) {
-        Map<String, Object> raw = fetchRaw(ddbCharacterId);
+    /**
+     * Parse the share link/ID, fetch character data, and map it to a Character.
+     * @param shareLink full share URL or bare character ID
+     */
+    public Character fetchAndMap(String shareLink, User owner) {
+        ParsedDdbLink parsed = parseLink(shareLink);
+        Map<String, Object> raw = fetchRaw(parsed.characterId(), parsed.shareKey());
         Character character = mapToCharacter(raw, owner);
-        character.setDdbCharacterId(ddbCharacterId);
+        character.setDdbCharacterId(parsed.characterId());
         character.setImportSource(Character.ImportSource.DDB_API);
         character.setRawSource(raw);
         return character;
     }
 
-    public void updateFromDdb(Character existing, String ddbCharacterId) {
-        Map<String, Object> raw = fetchRaw(ddbCharacterId);
+    public void updateFromDdb(Character existing, String shareLink) {
+        ParsedDdbLink parsed = parseLink(shareLink);
+        Map<String, Object> raw = fetchRaw(parsed.characterId(), parsed.shareKey());
         mapToCharacter(raw, existing);
         existing.setRawSource(raw);
+    }
+
+    /**
+     * Extract the numeric character ID from a share link or bare ID string.
+     * Useful for deduplication checks without fetching.
+     */
+    public String extractCharacterId(String shareLink) {
+        return parseLink(shareLink).characterId();
+    }
+
+    // ── Link parsing ──────────────────────────────────────────────────────────
+
+    public record ParsedDdbLink(String characterId, String shareKey) {}
+
+    public static ParsedDdbLink parseLink(String input) {
+        if (input == null || input.isBlank()) {
+            throw new DdbImportException("Please enter a D&D Beyond share link or character ID.", null);
+        }
+        String trimmed = input.trim();
+
+        // Bare numeric ID
+        if (trimmed.matches("\\d+")) {
+            return new ParsedDdbLink(trimmed, null);
+        }
+
+        // Full or partial URL: /characters/{id} or /characters/{id}/{shareKey}
+        Matcher m = SHARE_LINK_PATTERN.matcher(trimmed);
+        if (m.matches()) {
+            return new ParsedDdbLink(m.group(1), m.group(2)); // group(2) may be null
+        }
+
+        throw new DdbImportException(
+                "Unrecognised format. Paste a D&D Beyond share link " +
+                "(e.g. dndbeyond.com/characters/123456789/AbCdEf) or just the numeric character ID.", null);
     }
 
     // ── Private: HTTP fetch ───────────────────────────────────────────────────
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> fetchRaw(String ddbCharacterId) {
-        String url = ddbApiBase + "/" + ddbCharacterId + "/json";
-        log.info("Fetching DDB character from {}", url);
+    private Map<String, Object> fetchRaw(String characterId, String shareKey) {
+        // Prefer character-service with share token; fall back to public JSON endpoint
+        if (shareKey != null && !shareKey.isBlank()) {
+            try {
+                return fetchFromCharacterService(characterId, shareKey);
+            } catch (DdbCharacterNotFoundException e) {
+                throw e;
+            } catch (Exception e) {
+                log.warn("Character service fetch failed for {}, falling back to public endpoint: {}",
+                        characterId, e.getMessage());
+            }
+        }
+        return fetchFromPublicEndpoint(characterId);
+    }
+
+    private Map<String, Object> fetchFromCharacterService(String characterId, String shareKey) {
+        String url = characterServiceBase + "/" + characterId;
+        log.info("Fetching DDB character from character service: {}", url);
+
+        try {
+            String json = webClientBuilder.build()
+                    .get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + shareKey)
+                    .header("User-Agent", "GridlockDM/1.0")
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .timeout(Duration.ofMillis(timeoutMs))
+                    .block();
+
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+
+        } catch (WebClientResponseException.NotFound e) {
+            throw new DdbCharacterNotFoundException(
+                    "Character " + characterId + " not found. Check that the share link is correct.");
+        } catch (WebClientResponseException e) {
+            throw new DdbImportException(
+                    "D&D Beyond character service returned an error: " + e.getStatusCode(), e);
+        } catch (Exception e) {
+            throw new DdbImportException(
+                    "Failed to fetch character from D&D Beyond: " + e.getMessage(), e);
+        }
+    }
+
+    private Map<String, Object> fetchFromPublicEndpoint(String characterId) {
+        String url = ddbApiBase + "/" + characterId + "/json";
+        log.info("Fetching DDB character from public endpoint: {}", url);
 
         try {
             String json = webClientBuilder.build()
@@ -78,13 +171,13 @@ public class DdbImportService {
 
         } catch (WebClientResponseException.NotFound e) {
             throw new DdbCharacterNotFoundException(
-                    "Character " + ddbCharacterId + " not found on D&D Beyond. " +
-                    "Make sure the character is set to public visibility.");
+                    "Character " + characterId + " not found on D&D Beyond. " +
+                    "Make sure the character exists and use a share link for private characters.");
         } catch (WebClientResponseException e) {
             if (e.getStatusCode().value() == 500) {
                 throw new DdbCharacterNotFoundException(
-                        "Could not access character " + ddbCharacterId + " on D&D Beyond. " +
-                        "Make sure the character is set to public visibility in your D&D Beyond sharing settings.");
+                        "Could not access character " + characterId + " — it may be set to private. " +
+                        "Use the D&D Beyond share link (Manage → Share) to import private characters.");
             }
             throw new DdbImportException("D&D Beyond returned an error: " + e.getStatusCode(), e);
         } catch (Exception e) {
@@ -94,10 +187,6 @@ public class DdbImportService {
 
     // ── Private: field mapping ────────────────────────────────────────────────
 
-    /**
-     * Maps the DDB JSON blob to a new Character entity.
-     * DDB's JSON structure: { data: { name, race, classes: [...], ... } }
-     */
     @SuppressWarnings("unchecked")
     private Character mapToCharacter(Map<String, Object> raw, User owner) {
         Character character = Character.builder().owner(owner).build();
@@ -115,7 +204,6 @@ public class DdbImportService {
         // ── Identity ──────────────────────────────────────────────────────────
         character.setName(stringVal(data, "name", "Unknown Adventurer"));
 
-        // Race — can be a nested object or a string depending on DDB version
         Object raceObj = data.get("race");
         if (raceObj instanceof Map<?,?> raceMap) {
             character.setRace(stringVal((Map<String, Object>) raceMap, "fullName", null));
@@ -123,7 +211,6 @@ public class DdbImportService {
             character.setRace(s);
         }
 
-        // Classes — DDB supports multiclass; we join them for display
         Object classesObj = data.get("classes");
         if (classesObj instanceof java.util.List<?> classes && !classes.isEmpty()) {
             StringBuilder className = new StringBuilder();
@@ -156,7 +243,7 @@ public class DdbImportService {
         // ── Ability scores ────────────────────────────────────────────────────
         extractAbilities(data, character);
 
-        // ── Proficiency bonus (derived from total level, per 5e rules) ────────
+        // ── Proficiency bonus ─────────────────────────────────────────────────
         int level = character.getLevel() != null ? character.getLevel() : 1;
         character.setProficiencyBonus(proficiencyBonusForLevel(level));
 
@@ -174,7 +261,6 @@ public class DdbImportService {
         Object hpObj = data.get("baseHitPoints");
         if (hpObj instanceof Number n) return n.intValue();
 
-        // Some DDB responses nest it differently
         Object statsObj = data.get("hitPointInfo");
         if (statsObj instanceof Map<?,?> hpMap) {
             return intVal((Map<String, Object>) hpMap, "maximumHitPoints", null);
@@ -194,7 +280,6 @@ public class DdbImportService {
 
     @SuppressWarnings("unchecked")
     private Integer extractAc(Map<String, Object> data) {
-        // DDB computes AC server-side; it may appear in stats or overrides
         Object acObj = data.get("armorClass");
         if (acObj instanceof Number n) return n.intValue();
         return null;
@@ -216,7 +301,7 @@ public class DdbImportService {
                 }
             }
         }
-        return 30; // D&D 5e default
+        return 30;
     }
 
     @SuppressWarnings("unchecked")
@@ -236,7 +321,6 @@ public class DdbImportService {
         Object statsObj = data.get("stats");
         if (!(statsObj instanceof java.util.List<?> stats)) return;
 
-        // DDB stat IDs: 1=STR, 2=DEX, 3=CON, 4=INT, 5=WIS, 6=CHA
         for (Object statObj : stats) {
             if (!(statObj instanceof Map<?,?> stat)) continue;
             int id    = intVal((Map<String, Object>) stat, "id", 0);
@@ -265,7 +349,7 @@ public class DdbImportService {
     }
 
     private int proficiencyBonusForLevel(int level) {
-        return 2 + ((level - 1) / 4);   // 5e formula: +2 at 1-4, +3 at 5-8, etc.
+        return 2 + ((level - 1) / 4);
     }
 
     // ── Exceptions ────────────────────────────────────────────────────────────

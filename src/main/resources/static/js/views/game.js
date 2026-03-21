@@ -5,7 +5,7 @@ import { getState, setState } from '../store.js';
 import { toast, esc, conditionBadges, hpBar, initials } from '../ui.js';
 import { navigate }     from '../router.js';
 import * as ws          from '../ws.js';
-import { Renderer }     from '../canvas/renderer.js';
+import { Renderer, ZONE_TYPES } from '../canvas/renderer.js';
 
 // ── DM View ───────────────────────────────────────────────────────
 
@@ -32,6 +32,8 @@ export async function renderDmView({ code }) {
   // Load existing map if already uploaded
   if (session.mapImageUrl) {
     renderer.loadMap(session.mapImageUrl, session.gridConfig);
+    if (session.zones)    renderer.updateZones(session.zones);
+    if (session.fogState) renderer.updateFog(session.fogState);
   }
 
   // Load roster
@@ -70,6 +72,8 @@ export async function renderPlayerView({ code }) {
 
   if (session.mapImageUrl) {
     renderer.loadMap(session.mapImageUrl, session.gridConfig);
+    if (session.zones)    renderer.updateZones(session.zones);
+    if (session.fogState) renderer.updateFog(session.fogState);
   }
 
   await refreshRoster(session.id, renderer);
@@ -90,15 +94,25 @@ export async function renderObserverView({ code }, query) {
 
   app.innerHTML = observerShell();
 
-  // Observers use the token from the URL
-  ws.connect(code, observerToken);
-
   const canvas   = document.getElementById('game-canvas');
   const renderer = new Renderer(canvas, { role: 'observer', fitToScreen: true });
 
+  // Set observer token so API calls can authenticate
+  if (observerToken) setState('token', observerToken);
+
+  // Load initial session state (map, grid, zones, roster)
+  const session = await loadSession(code);
+  if (session?.mapImageUrl) {
+    renderer.loadMap(session.mapImageUrl, session.gridConfig);
+    if (session.zones)    renderer.updateZones(session.zones);
+    if (session.fogState) renderer.updateFog(session.fogState);
+  }
+  if (session) await refreshRoster(session.id, renderer);
+
+  // Connect WS after initial load so events don't race with REST data
+  ws.connect(code, observerToken);
   bindSessionEvents(renderer, code, 'observer');
 
-  // Observer listens for DM viewport broadcasts
   ws.on('DM_VIEWPORT', ({ zoom, panX, panY }) => {
     renderer.setViewport(zoom, panX, panY);
   });
@@ -152,6 +166,15 @@ function bindSessionEvents(renderer, code, role) {
 
   ws.on('MAP_LOADED', ({ mapImageUrl, gridConfig }) => {
     renderer.loadMap(mapImageUrl, gridConfig);
+  });
+
+  ws.on('GRID_UPDATED', (gridConfig) => {
+    renderer.updateGridConfig(gridConfig);
+    updateGridPanel(gridConfig);
+  });
+
+  ws.on('ZONES_UPDATED', (zones) => {
+    renderer.updateZones(zones);
   });
 
   ws.on('SESSION_ENDED', () => {
@@ -214,6 +237,21 @@ function dmShell(code) {
           </div>
         </div>
 
+        <!-- Zone type picker (shown when zone tool active) -->
+        <div class="game-panel-section" id="zone-type-picker" style="display:none">
+          <div class="game-panel-label">Zone Type</div>
+          <div style="display:flex;flex-direction:column;gap:var(--sp-1)">
+            ${Object.entries(ZONE_TYPES).map(([key, def]) => `
+              <button class="btn btn-ghost${key === 'difficult' ? ' active' : ''}"
+                      data-zone-type="${key}"
+                      style="justify-content:flex-start;gap:var(--sp-3);font-size:0.75rem">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;
+                             background:${def.color};flex-shrink:0"></span>
+                ${def.label}
+              </button>`).join('')}
+          </div>
+        </div>
+
         <!-- Map upload -->
         <div class="game-panel-section">
           <div class="game-panel-label">Battlemap</div>
@@ -221,15 +259,19 @@ function dmShell(code) {
           <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3)" id="btn-upload-map">
             🗺 Upload Map
           </button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3);margin-top:var(--sp-1)" id="btn-edit-grid">
+            ⊞ Edit Grid
+          </button>
         </div>
 
-        <!-- Fog controls -->
+        <!-- Fog + Zone controls -->
         <div class="game-panel-section">
           <div class="game-panel-label">Visibility</div>
-          <div style="display:flex;gap:var(--sp-2)">
+          <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2)">
             <button class="btn btn-ghost" style="flex:1;font-size:0.65rem" id="fog-reveal-all">Reveal All</button>
             <button class="btn btn-ghost" style="flex:1;font-size:0.65rem" id="fog-hide-all">Hide All</button>
           </div>
+          <button class="btn btn-ghost" style="width:100%;font-size:0.65rem" id="zones-clear-all">Clear All Zones</button>
         </div>
 
         <!-- Session controls -->
@@ -479,14 +521,18 @@ function wireDmControls(session, renderer, code) {
   });
 
   // Fog controls
-  document.getElementById('fog-reveal-all')?.addEventListener('click', () => {
-    renderer.setFogAll(true);
-    ws.send('FOG_REVEAL_ALL', {});
+  document.getElementById('fog-reveal-all')?.addEventListener('click', async () => {
+    try {
+      await sessions.revealAllFog(session.id);
+      renderer.setFogAll(true);
+    } catch (err) { toast(err.message || 'Failed to reveal fog', 'error'); }
   });
 
-  document.getElementById('fog-hide-all')?.addEventListener('click', () => {
-    renderer.setFogAll(false);
-    ws.send('FOG_HIDE_ALL', {});
+  document.getElementById('fog-hide-all')?.addEventListener('click', async () => {
+    try {
+      await sessions.hideAllFog(session.id);
+      renderer.setFogAll(false);
+    } catch (err) { toast(err.message || 'Failed to hide fog', 'error'); }
   });
 
   // Next turn
@@ -537,6 +583,51 @@ function wireDmControls(session, renderer, code) {
 
   // Canvas: token selection → open panel
   renderer.on('tokenSelected', (tokenId) => openTokenPanel(tokenId));
+
+  // Canvas: fog painted → persist via REST (broadcasts FOG_UPDATED to all clients)
+  renderer.on('fogPainted', async (cells) => {
+    try {
+      await sessions.updateFog(session.id, cells);
+    } catch (err) { toast(err.message || 'Fog update failed', 'error'); }
+  });
+
+  // Canvas: zones painted → send to server
+  renderer.on('zonesPainted', async (zones) => {
+    try {
+      await sessions.updateZones(session.id, zones);
+    } catch (err) { toast(err.message || 'Zone update failed', 'error'); }
+  });
+
+  // Clear all zones
+  document.getElementById('zones-clear-all')?.addEventListener('click', async () => {
+    try {
+      await sessions.clearZones(session.id);
+      renderer.clearZones();
+      toast('All zones cleared', 'success');
+    } catch (err) { toast(err.message || 'Failed to clear zones', 'error'); }
+  });
+
+  // Tool switching also shows zone type picker
+  document.querySelectorAll('[id^="tool-"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const zonePicker = document.getElementById('zone-type-picker');
+      if (zonePicker) zonePicker.style.display = btn.id === 'tool-zone' ? 'block' : 'none';
+    });
+  });
+
+  // Zone type buttons
+  document.querySelectorAll('[data-zone-type]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-zone-type]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderer.setZoneType(btn.dataset.zoneType);
+    });
+  });
+
+  // Grid config panel
+  document.getElementById('btn-edit-grid')?.addEventListener('click', () => {
+    openGridPanel(session, renderer);
+  });
 }
 
 // ── Token detail panel (DM) ───────────────────────────────────────
@@ -609,6 +700,134 @@ function openTokenPanel(tokenId) {
     ws.send('UPDATE_CONDITIONS', { tokenId, conditions });
     toast('Conditions updated', 'success');
     panel.remove();
+  });
+}
+
+// ── Grid config panel ─────────────────────────────────────────────
+
+function normalizeGridCfg(cfg) {
+  if (!cfg) return { marginLeft: 0, marginRight: 0, marginTop: 0, marginBottom: 0, cols: 20, rows: 15, confidence: 0 };
+  if (cfg.marginLeft !== undefined) return cfg;
+  // Convert legacy { originX, originY, cellSizePx, cols, rows } → margin format
+  return {
+    marginLeft:   cfg.originX   || 0,
+    marginRight:  0,
+    marginTop:    cfg.originY   || 0,
+    marginBottom: 0,
+    cols:         cfg.cols      || 20,
+    rows:         cfg.rows      || 15,
+    confidence:   cfg.confidence || 0,
+  };
+}
+
+function openGridPanel(session, renderer) {
+  document.getElementById('grid-panel')?.remove();
+
+  const cfg = normalizeGridCfg(renderer.gridConfig);
+  const confidence = cfg.confidence != null ? Math.round(cfg.confidence * 100) : 0;
+
+  const panel = document.createElement('div');
+  panel.id = 'grid-panel';
+  panel.style.cssText = `
+    position:fixed;left:260px;top:var(--topbar-h,0);width:300px;
+    background:var(--bg-void);border-right:1px solid var(--border);
+    border-bottom:1px solid var(--border);border-radius:0 0 var(--radius) 0;
+    z-index:50;padding:var(--sp-5);animation:page-in 0.15s var(--ease-out) both`;
+
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--sp-4)">
+      <div style="font-family:var(--font-display);font-weight:700;font-size:0.95rem">Grid Config</div>
+      <button class="btn btn-ghost btn-icon" id="close-grid-panel">✕</button>
+    </div>
+    ${confidence > 0 ? `
+    <div style="margin-bottom:var(--sp-4);padding:var(--sp-2) var(--sp-3);
+                background:var(--bg-raised);border-radius:var(--radius-sm);
+                font-size:0.75rem;color:var(--text-muted)">
+      Claude detected grid with <strong style="color:var(--gold)">${confidence}%</strong> confidence
+    </div>` : `
+    <div style="margin-bottom:var(--sp-4);padding:var(--sp-2) var(--sp-3);
+                background:var(--bg-raised);border-radius:var(--radius-sm);
+                font-size:0.75rem;color:var(--text-muted)">
+      No grid detected — adjust manually
+    </div>`}
+
+    ${gridInput('marginLeft',   'Margin Left (px)',   cfg.marginLeft,   0, 500)}
+    ${gridInput('marginRight',  'Margin Right (px)',  cfg.marginRight,  0, 500)}
+    ${gridInput('marginTop',    'Margin Top (px)',    cfg.marginTop,    0, 500)}
+    ${gridInput('marginBottom', 'Margin Bottom (px)', cfg.marginBottom, 0, 500)}
+    ${gridInput('cols',         'Columns',            cfg.cols,         1, 100)}
+    ${gridInput('rows',         'Rows',               cfg.rows,         1, 100)}
+
+    <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-4)">
+      <button class="btn btn-primary" style="flex:1" id="grid-apply">Apply</button>
+      <button class="btn btn-ghost"   style="flex:1" id="grid-cancel">Cancel</button>
+    </div>`;
+
+  document.body.appendChild(panel);
+
+  // Live preview as sliders move
+  panel.querySelectorAll('input[type=range]').forEach(slider => {
+    slider.addEventListener('input', () => {
+      const span = panel.querySelector(`#val-${slider.id}`);
+      if (span) span.textContent = slider.value;
+      renderer.updateGridConfig(readGridPanel(panel, cfg));
+    });
+  });
+
+  document.getElementById('close-grid-panel').addEventListener('click', () => {
+    renderer.updateGridConfig(cfg);  // revert
+    panel.remove();
+  });
+  document.getElementById('grid-cancel').addEventListener('click', () => {
+    renderer.updateGridConfig(cfg);
+    panel.remove();
+  });
+
+  document.getElementById('grid-apply').addEventListener('click', async () => {
+    const newCfg = readGridPanel(panel, cfg);
+    try {
+      await sessions.updateGrid(session.id, newCfg);
+      renderer.updateGridConfig(newCfg);
+      toast('Grid updated!', 'success');
+      panel.remove();
+    } catch (err) { toast(err.message || 'Grid update failed', 'error'); }
+  });
+}
+
+function gridInput(id, label, value, min = -500, max = 2000) {
+  return `
+    <div style="margin-bottom:var(--sp-3)">
+      <div style="display:flex;justify-content:space-between;margin-bottom:var(--sp-1)">
+        <label style="font-size:0.75rem;color:var(--text-muted)">${label}</label>
+        <span id="val-${id}" style="font-family:var(--font-mono);font-size:0.75rem;color:var(--gold)">${value}</span>
+      </div>
+      <input type="range" id="${id}" min="${min}" max="${max}" value="${value}"
+             style="width:100%;accent-color:var(--gold)">
+    </div>`;
+}
+
+function readGridPanel(panel, defaults) {
+  const v = (id) => parseInt(panel.querySelector(`#${id}`)?.value ?? defaults[id] ?? 0, 10);
+  return {
+    marginLeft:   Math.max(0, v('marginLeft')),
+    marginRight:  Math.max(0, v('marginRight')),
+    marginTop:    Math.max(0, v('marginTop')),
+    marginBottom: Math.max(0, v('marginBottom')),
+    cols:         Math.max(1, v('cols')),
+    rows:         Math.max(1, v('rows')),
+    confidence:   defaults.confidence || 0,
+  };
+}
+
+function updateGridPanel(gridConfig) {
+  const panel = document.getElementById('grid-panel');
+  if (!panel) return;
+  const cfg = normalizeGridCfg(gridConfig);
+  ['marginLeft','marginRight','marginTop','marginBottom','cols','rows'].forEach(key => {
+    const input = panel.querySelector(`#${key}`);
+    const span  = panel.querySelector(`#val-${key}`);
+    if (input && cfg[key] != null) { input.value = cfg[key]; }
+    if (span  && cfg[key] != null) { span.textContent = cfg[key]; }
   });
 }
 
