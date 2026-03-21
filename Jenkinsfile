@@ -46,9 +46,20 @@ pipeline {
                                                         sshagent(credentials: ['ssh-deploy-gridlockdm']) {
                                                                                 sh """
                                                                                     JAR=\$(ls target/gridlockdm-*.jar | head -1)
+
+                                                                                    echo ">>> Copying JAR to server..."
                                                                                     scp -o StrictHostKeyChecking=no "\$JAR" ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/gridlockdm.jar
+
+                                                                                    echo ">>> Copying docker-compose.yml to server..."
                                                                                     scp -o StrictHostKeyChecking=no docker-compose.yml ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/docker-compose.yml
-                                                                                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'cd ${DEPLOY_PATH} && sudo docker compose down && sudo docker compose up -d --build'
+
+                                                                                    echo ">>> Stopping containers..."
+                                                                                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'cd ${DEPLOY_PATH} && sudo docker compose down'
+
+                                                                                    echo ">>> Building and starting containers..."
+                                                                                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} 'cd ${DEPLOY_PATH} && sudo docker compose up -d --build'
+
+                                                                                    echo ">>> Deploy complete."
                                                                                 """
                                                         }
                                     }

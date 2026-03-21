@@ -23,7 +23,7 @@ WORKDIR /app
 RUN addgroup -S gridlock && adduser -S gridlock -G gridlock
 USER gridlock
 
-COPY --from=builder /build/target/gridlockdm-*.jar app.jar
+COPY --from=builder /opt/gridlockdm/gridlockdm-*.jar app.jar
 
 EXPOSE 8080
 
