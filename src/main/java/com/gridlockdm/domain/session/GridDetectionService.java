@@ -4,16 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
-import org.hibernate.annotations.Columns;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
 import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
-import java.nio.file.Files;
+import java.awt.image.ConvolveOp;
+import java.awt.image.Kernel;
+import java.awt.image.RescaleOp;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -90,9 +93,14 @@ public class GridDetectionService {
         }
 
         try {
-            byte[] bytes  = Files.readAllBytes(imagePath);
-            String base64 = Base64.getEncoder().encodeToString(bytes);
-            String media  = contentType != null ? contentType : "image/jpeg";
+            BufferedImage raw = ImageIO.read(imagePath.toFile());
+            if (raw == null) {
+                log.warn("Could not read image for grid detection: {}", imagePath);
+                return null;
+            }
+
+            String base64 = Base64.getEncoder().encodeToString(encodeProcessed(raw));
+            String prompt = String.format(PROMPT, imagePath.getFileName().toString());
 
             RestClient client = RestClient.builder()
                     .baseUrl("https://api.anthropic.com")
@@ -107,9 +115,9 @@ public class GridDetectionService {
                                     Map.of("type", "image",
                                            "source", Map.of(
                                                    "type",       "base64",
-                                                   "media_type", media,
+                                                   "media_type", "image/png",
                                                    "data",       base64)),
-                                    Map.of("type", "text", "text", PROMPT)
+                                    Map.of("type", "text", "text", prompt)
                             )
                     ))
             );
@@ -123,7 +131,7 @@ public class GridDetectionService {
                     .retrieve()
                     .body(String.class);
 
-            return parseResponse(responseJson, imagePath);
+            return parseResponse(responseJson, raw.getWidth(), raw.getHeight());
 
         } catch (Exception e) {
             log.warn("Grid detection failed ({}), falling back to default", e.getMessage());
@@ -131,7 +139,31 @@ public class GridDetectionService {
         }
     }
 
-    private Map<String, Object> parseResponse(String responseJson, Path imagePath) throws Exception {
+    /**
+     * Sharpen and boost contrast so subtle grid lines stand out more clearly
+     * before sending to the vision API. Always outputs PNG for lossless encoding.
+     */
+    private byte[] encodeProcessed(BufferedImage src) throws IOException {
+        // Convert to RGB — strips alpha and avoids ConvolveOp edge cases
+        BufferedImage rgb = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = rgb.createGraphics();
+        g.drawImage(src, 0, 0, null);
+        g.dispose();
+
+        // Sharpen: makes 1-2px grid lines crisper against textured backgrounds
+        float[] sharpenKernel = { 0, -1, 0, -1, 5, -1, 0, -1, 0 };
+        BufferedImage sharpened = new ConvolveOp(
+                new Kernel(3, 3, sharpenKernel), ConvolveOp.EDGE_NO_OP, null).filter(rgb, null);
+
+        // Contrast boost: helps subtle lines stand out from background noise
+        BufferedImage enhanced = new RescaleOp(1.2f, 15f, null).filter(sharpened, null);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(enhanced, "png", baos);
+        return baos.toByteArray();
+    }
+
+    private Map<String, Object> parseResponse(String responseJson, int imgW, int imgH) throws Exception {
         JsonNode root    = objectMapper.readTree(responseJson);
         String   text    = root.path("content").get(0).path("text").asText();
 
@@ -150,10 +182,6 @@ public class GridDetectionService {
         int      marginBottom = node.path("marginBottom").asInt(0);
         double   confidence   = node.path("confidence").asDouble(0.0);
 
-        // Derive cols/rows from image size if Claude omitted them
-        BufferedImage img  = ImageIO.read(imagePath.toFile());
-        int imgW = img != null ? img.getWidth()  : 0;
-        int imgH = img != null ? img.getHeight() : 0;
         int effectiveW = Math.max(1, imgW - marginLeft - marginRight);
         int effectiveH = Math.max(1, imgH - marginTop  - marginBottom);
         int cols = node.has("cols") ? node.path("cols").asInt(1) : Math.max(1, effectiveW / 50);

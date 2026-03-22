@@ -42,6 +42,11 @@ export function loadPersistedAuth() {
   const raw   = localStorage.getItem('glock_user');
   if (token && raw) {
     try {
+      if (isTokenExpired(token)) {
+        localStorage.removeItem('glock_token');
+        localStorage.removeItem('glock_user');
+        return false;
+      }
       const user = JSON.parse(raw);
       setState('token', token);
       setState('user', user);
@@ -62,5 +67,20 @@ export function clearAuth() {
 }
 
 export function isAuthenticated() {
-  return !!getState('token');
+  const token = getState('token');
+  if (!token) return false;
+  if (isTokenExpired(token)) {
+    clearAuth();
+    return false;
+  }
+  return true;
+}
+
+function isTokenExpired(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return true;   // malformed token — treat as expired
+  }
 }
