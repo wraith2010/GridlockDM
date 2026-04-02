@@ -125,6 +125,36 @@ export class Renderer {
     this.panY = panY;
   }
 
+  /**
+   * Zoom so that each grid square is approximately 1 physical inch on screen.
+   * Uses a hidden 1in ruler element to measure CSS pixels-per-inch, then scales
+   * to match. Keeps the current viewport center stable.
+   */
+  zoomToInch() {
+    const m = this._gridMetrics();
+    if (!m || !this.mapImage) return;
+
+    // Measure CSS pixels per inch via a temporary ruler element
+    const ruler = document.createElement('div');
+    ruler.style.cssText = 'position:fixed;width:1in;height:0;visibility:hidden;pointer-events:none';
+    document.body.appendChild(ruler);
+    const pxPerInch = ruler.offsetWidth || 96;
+    document.body.removeChild(ruler);
+
+    const cellPx  = (m.cellW + m.cellH) / 2;
+    const newZoom = pxPerInch / cellPx;
+
+    // Zoom around the current canvas center so the view stays stable
+    const cx = this.canvas.width  / 2;
+    const cy = this.canvas.height / 2;
+    const mapCx = (cx - this.panX) / this.zoom;
+    const mapCy = (cy - this.panY) / this.zoom;
+
+    this.zoom = newZoom;
+    this.panX = cx - mapCx * newZoom;
+    this.panY = cy - mapCy * newZoom;
+  }
+
   /** Update fog cells — cells is an object { "x,y": true/false } */
   updateFog(cells) {
     Object.entries(cells).forEach(([key, revealed]) => {

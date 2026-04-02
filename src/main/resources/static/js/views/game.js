@@ -117,6 +117,10 @@ export async function renderObserverView({ code }, query) {
     renderer.setViewport(zoom, panX, panY);
   });
 
+  document.getElementById('btn-zoom-inch')?.addEventListener('click', () => {
+    renderer.zoomToInch();
+  });
+
   return {
     cleanup: () => { ws.disconnect(); renderer.destroy(); }
   };
@@ -337,6 +341,12 @@ function observerShell() {
     <div class="game-shell observer-layout">
       <div class="game-canvas-area" id="canvas-container">
         <canvas id="game-canvas"></canvas>
+        <button id="btn-zoom-inch" class="btn btn-ghost"
+                title="Zoom so each grid square is ~1 inch on screen"
+                style="position:absolute;bottom:var(--sp-4);right:var(--sp-4);
+                       z-index:10;opacity:0.75;font-size:0.7rem;padding:var(--sp-2) var(--sp-4)">
+          1&Prime; grid
+        </button>
       </div>
       <div class="initiative-strip" id="initiative-strip">
         <span style="font-family:var(--font-display);font-size:0.65rem;letter-spacing:0.1em;

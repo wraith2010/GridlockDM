@@ -1,346 +1,87 @@
-// js/views/character-import.js — Character import wizard
+// js/views/character-import.js — Add character
 
-import { characters }         from '../api.js';
+import { characters }             from '../api.js';
 import { toast, setLoading, esc } from '../ui.js';
-import { navigate }           from '../router.js';
-import { showTopbar }         from './dashboard.js';
+import { navigate }               from '../router.js';
+import { showTopbar }             from './dashboard.js';
 
 export function renderCharacterImport() {
   const app = document.getElementById('app');
   showTopbar('characters');
 
   app.innerHTML = `
-    <div class="page" style="max-width:720px">
+    <div class="page" style="max-width:480px">
       <div class="page-header">
-        <a href="#/dashboard" class="btn btn-ghost" style="margin-bottom:var(--sp-4);display:inline-flex">← Back</a>
+        <a href="#/dashboard" class="btn btn-ghost"
+           style="margin-bottom:var(--sp-4);display:inline-flex">← Back</a>
         <div class="page-title">Add Character</div>
-        <div class="page-subtitle">Import from D&amp;D Beyond, upload a PDF, or fill in manually</div>
       </div>
 
-      <div class="tabs" style="margin-bottom:var(--sp-6)">
-        <button class="tab active" data-tab="ddb">D&amp;D Beyond</button>
-        <button class="tab"        data-tab="pdf">PDF Upload</button>
-        <button class="tab"        data-tab="manual">Manual Entry</button>
-      </div>
-
-      <!-- DDB Import -->
-      <div id="tab-ddb" class="tab-panel">
-        <div class="card">
-          <div class="card-title">Import from D&amp;D Beyond</div>
-          <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--sp-5)">
-            Paste your D&amp;D Beyond character share link. Works with both public characters
-            and privately shared characters.
-          </p>
-
-          <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:var(--sp-5);
-                      background:var(--bg-raised);border:1px solid var(--border);
-                      border-radius:var(--radius);padding:var(--sp-3) var(--sp-4);
-                      display:flex;flex-direction:column;gap:var(--sp-2)">
-            <div>
-              🔗 <strong style="color:var(--text-secondary)">Share link</strong>
-              <span style="color:var(--text-muted)"> (works for private characters):</span><br>
-              <code style="color:var(--gold)">dndbeyond.com/characters/123140741/<strong>QEJoax</strong></code>
-            </div>
-            <div>
-              🌐 <strong style="color:var(--text-secondary)">Public URL or bare ID</strong>
-              <span style="color:var(--text-muted)"> also accepted:</span><br>
-              <code style="color:var(--gold)">dndbeyond.com/characters/<strong>123140741</strong></code>
-            </div>
-            <div style="margin-top:var(--sp-1);padding-top:var(--sp-2);border-top:1px solid var(--border-dim);
-                        font-size:0.78rem">
-              💡 Get a share link: open your character on D&amp;D Beyond → <strong>Manage</strong> → <strong>Share</strong>
-            </div>
-          </div>
+      <div class="card">
+        <form id="add-char-form" class="form">
 
           <div class="field">
-            <label for="ddb-link">Share Link or Character ID</label>
-            <input id="ddb-link" type="text"
-              placeholder="https://www.dndbeyond.com/characters/123140741/QEJoax"
-              style="font-family:var(--font-mono);font-size:0.9rem">
+            <label for="m-name">Character Name *</label>
+            <input id="m-name" type="text" placeholder="Halwan Tencloak" required autofocus>
           </div>
 
-          <div id="ddb-error" class="field-error mt-4" hidden></div>
-
-          <div style="margin-top:var(--sp-6)">
-            <button class="btn btn-primary btn-lg" id="btn-import-ddb">Import Character</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- PDF Import -->
-      <div id="tab-pdf" class="tab-panel" hidden>
-        <div class="card">
-          <div class="card-title">Upload Character Sheet PDF</div>
-          <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--sp-6)">
-            Export your character sheet from D&amp;D Beyond as a PDF and upload it here.
-            We'll automatically extract your stats from the form fields.
-          </p>
-
-          <div class="upload-zone" id="pdf-drop-zone">
-            <div class="upload-zone-icon">📄</div>
-            <div class="upload-zone-text">Drop your PDF here or click to browse</div>
-            <div class="upload-zone-hint">D&amp;D Beyond PDF export only · Max 20MB</div>
-            <input type="file" id="pdf-file-input" accept=".pdf,application/pdf"
-              style="display:none">
-          </div>
-
-          <div id="pdf-selected" hidden style="margin-top:var(--sp-4);display:flex;align-items:center;
-               gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);background:var(--bg-raised);
-               border:1px solid var(--border);border-radius:var(--radius)">
-            <span style="font-size:1.2rem">📎</span>
-            <div style="flex:1">
-              <div id="pdf-filename" style="font-size:0.9rem;color:var(--text-primary)"></div>
-              <div id="pdf-filesize" style="font-size:0.8rem;color:var(--text-muted)"></div>
-            </div>
-            <button class="btn btn-ghost btn-icon" id="pdf-remove" title="Remove">✕</button>
-          </div>
-
-          <div id="pdf-error" class="field-error mt-4" hidden></div>
-
-          <div style="margin-top:var(--sp-6)">
-            <button class="btn btn-primary btn-lg" id="btn-import-pdf" disabled>Upload & Import</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Manual Entry -->
-      <div id="tab-manual" class="tab-panel" hidden>
-        <div class="card">
-          <div class="card-title">Manual Character Entry</div>
-          <form id="manual-form" class="form" style="margin-top:var(--sp-2)">
-
-            <div class="field-row">
-              <div class="field">
-                <label for="m-name">Character Name *</label>
-                <input id="m-name" type="text" placeholder="Aric Stonehaven" required>
-              </div>
-              <div class="field">
-                <label for="m-race">Race</label>
-                <input id="m-race" type="text" placeholder="Half-Elf">
-              </div>
-            </div>
-
-            <div class="field-row">
-              <div class="field">
-                <label for="m-class">Class</label>
-                <input id="m-class" type="text" placeholder="Fighter / Rogue">
-              </div>
-              <div class="field">
-                <label for="m-level">Level</label>
-                <input id="m-level" type="number" placeholder="1" min="1" max="20" value="1">
-              </div>
-            </div>
-
+          <div class="field-row">
             <div class="field">
-              <label for="m-background">Background</label>
-              <input id="m-background" type="text" placeholder="Soldier">
+              <label for="m-class">Class &amp; Level</label>
+              <input id="m-class" type="text" placeholder="Wizard 5">
             </div>
-
-            <hr style="border:none;border-top:1px solid var(--border)">
-            <div style="font-family:var(--font-display);font-size:0.7rem;letter-spacing:0.1em;
-                        text-transform:uppercase;color:var(--text-muted)">Combat Stats</div>
-
-            <div class="field-row">
-              <div class="field">
-                <label for="m-hp">Max HP</label>
-                <input id="m-hp" type="number" placeholder="44" min="1">
-              </div>
-              <div class="field">
-                <label for="m-ac">Armor Class</label>
-                <input id="m-ac" type="number" placeholder="16" min="1">
-              </div>
+            <div class="field" style="max-width:100px">
+              <label for="m-speed">Speed (ft)</label>
+              <input id="m-speed" type="number" placeholder="30" min="0" value="30">
             </div>
+          </div>
 
-            <div class="field-row">
-              <div class="field">
-                <label for="m-speed">Speed (ft)</label>
-                <input id="m-speed" type="number" placeholder="30" min="0" value="30">
-              </div>
-              <div class="field">
-                <label for="m-init">Initiative Bonus</label>
-                <input id="m-init" type="number" placeholder="+3">
-              </div>
-            </div>
-
-            <hr style="border:none;border-top:1px solid var(--border)">
-            <div style="font-family:var(--font-display);font-size:0.7rem;letter-spacing:0.1em;
-                        text-transform:uppercase;color:var(--text-muted)">Ability Scores</div>
-
-            <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:var(--sp-3)">
-              ${['STR','DEX','CON','INT','WIS','CHA'].map(a => `
-                <div class="field" style="text-align:center">
-                  <label for="m-${a.toLowerCase()}">${a}</label>
-                  <input id="m-${a.toLowerCase()}" type="number" placeholder="10" min="1" max="30"
-                    style="text-align:center;padding:var(--sp-3) var(--sp-2)">
-                </div>`).join('')}
-            </div>
-
+          <div class="field-row">
             <div class="field">
-              <label for="m-avatar">Avatar URL (optional)</label>
-              <input id="m-avatar" type="url" placeholder="https://…/portrait.png">
+              <label for="m-hp">Max HP</label>
+              <input id="m-hp" type="number" placeholder="37" min="1">
             </div>
+            <div class="field">
+              <label for="m-ac">Armor Class</label>
+              <input id="m-ac" type="number" placeholder="13" min="1">
+            </div>
+          </div>
 
-            <div id="manual-error" class="field-error" hidden></div>
+          <div id="add-char-error" class="field-error" hidden></div>
 
-            <button type="submit" class="btn btn-primary btn-lg" id="btn-import-manual">
-              Save Character
-            </button>
-          </form>
-        </div>
+          <button type="submit" class="btn btn-primary btn-lg btn-full" id="btn-add-char">
+            Add Character
+          </button>
+        </form>
       </div>
     </div>`;
 
-  wireTabSwitcher();
-  wireDdbImport();
-  wirePdfImport();
-  wireManualForm();
+  wireForm();
 }
 
-// ── Tabs ──────────────────────────────────────────────────────────
-
-function wireTabSwitcher() {
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p => p.hidden = true);
-      tab.classList.add('active');
-      document.getElementById(`tab-${tab.dataset.tab}`).hidden = false;
-    });
-  });
-}
-
-// ── DDB import ────────────────────────────────────────────────────
-
-function wireDdbImport() {
-  const btn   = document.getElementById('btn-import-ddb');
-  const input = document.getElementById('ddb-link');
-  const errEl = document.getElementById('ddb-error');
-
-  btn.addEventListener('click', async () => {
-    const shareLink = input.value.trim();
-    if (!shareLink) {
-      input.focus();
-      return;
-    }
-
-    errEl.hidden = true;
-    setLoading(btn, true, 'Fetching from D&D Beyond…');
-
-    try {
-      const char = await characters.importDdb(shareLink);
-      toast(`Imported ${char.name}! 🎲`, 'success');
-      navigate('/dashboard');
-    } catch (err) {
-      errEl.textContent = err.message;
-      errEl.hidden = false;
-    } finally {
-      setLoading(btn, false);
-    }
-  });
-}
-
-// ── PDF import ────────────────────────────────────────────────────
-
-function wirePdfImport() {
-  const dropZone  = document.getElementById('pdf-drop-zone');
-  const fileInput = document.getElementById('pdf-file-input');
-  const btn       = document.getElementById('btn-import-pdf');
-  const errEl     = document.getElementById('pdf-error');
-  let selectedFile = null;
-
-  dropZone.addEventListener('click', () => fileInput.click());
-
-  dropZone.addEventListener('dragover', e => {
-    e.preventDefault();
-    dropZone.classList.add('drag-over');
-  });
-
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file) selectFile(file);
-  });
-
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) selectFile(fileInput.files[0]);
-  });
-
-  document.getElementById('pdf-remove').addEventListener('click', () => {
-    selectedFile = null;
-    fileInput.value = '';
-    document.getElementById('pdf-selected').hidden = true;
-    btn.disabled = true;
-  });
-
-  function selectFile(file) {
-    if (!file.name.endsWith('.pdf') && file.type !== 'application/pdf') {
-      toast('Please select a PDF file', 'error');
-      return;
-    }
-    selectedFile = file;
-    document.getElementById('pdf-filename').textContent = file.name;
-    document.getElementById('pdf-filesize').textContent =
-      (file.size / 1024).toFixed(1) + ' KB';
-    document.getElementById('pdf-selected').hidden = false;
-    btn.disabled = false;
-    errEl.hidden = true;
-  }
-
-  btn.addEventListener('click', async () => {
-    if (!selectedFile) return;
-    errEl.hidden = true;
-    setLoading(btn, true, 'Parsing PDF…');
-
-    try {
-      const char = await characters.importPdf(selectedFile);
-      toast(`Imported ${char.name} from PDF! 📄`, 'success');
-      navigate('/dashboard');
-    } catch (err) {
-      errEl.textContent = err.message;
-      errEl.hidden = false;
-    } finally {
-      setLoading(btn, false);
-    }
-  });
-}
-
-// ── Manual form ───────────────────────────────────────────────────
-
-function wireManualForm() {
-  const form  = document.getElementById('manual-form');
-  const errEl = document.getElementById('manual-error');
+function wireForm() {
+  const form  = document.getElementById('add-char-form');
+  const errEl = document.getElementById('add-char-error');
 
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    const btn = document.getElementById('btn-import-manual');
+    const btn = document.getElementById('btn-add-char');
     errEl.hidden = true;
 
+    const rawClass = document.getElementById('m-class').value.trim();
     const dto = {
-      name:            document.getElementById('m-name').value.trim(),
-      race:            document.getElementById('m-race').value.trim() || null,
-      className:       document.getElementById('m-class').value.trim() || null,
-      level:           intVal('m-level', 1),
-      background:      document.getElementById('m-background').value.trim() || null,
-      maxHp:           intVal('m-hp'),
-      armorClass:      intVal('m-ac'),
-      speed:           intVal('m-speed', 30),
-      initiativeBonus: intVal('m-init', 0),
-      strength:        intVal('m-str'),
-      dexterity:       intVal('m-dex'),
-      constitution:    intVal('m-con'),
-      intelligence:    intVal('m-int'),
-      wisdom:          intVal('m-wis'),
-      charisma:        intVal('m-cha'),
-      avatarUrl:       document.getElementById('m-avatar').value.trim() || null,
+      name:      document.getElementById('m-name').value.trim(),
+      className: rawClass || null,
+      level:     parseClassLevel(rawClass),
+      speed:     intVal('m-speed', 30),
+      maxHp:     intVal('m-hp'),
+      armorClass: intVal('m-ac'),
     };
 
     setLoading(btn, true, 'Saving…');
     try {
       const char = await characters.createManual(dto);
-      toast(`Character ${char.name} saved!`, 'success');
+      toast(`${char.name} added!`, 'success');
       navigate('/dashboard');
     } catch (err) {
       errEl.textContent = err.message;
@@ -349,6 +90,14 @@ function wireManualForm() {
       setLoading(btn, false);
     }
   });
+}
+
+/** Extract trailing number from "Wizard 5" or "Fighter 3 / Rogue 2" → total level */
+function parseClassLevel(raw) {
+  if (!raw) return null;
+  const nums = [...raw.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+  if (!nums.length) return null;
+  return nums.reduce((a, b) => a + b, 0);
 }
 
 function intVal(id, fallback = null) {
