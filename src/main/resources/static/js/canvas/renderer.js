@@ -41,14 +41,15 @@ export class Renderer {
     this.activeZoneType = 'difficult';
 
     // Interaction state
-    this.isDragging  = false;
-    this.dragStart   = { x: 0, y: 0 };
-    this.selectedId  = null;
-    this.hoveredCell = null;         // { x, y } grid cell under cursor
-    this._dragToken  = null;
-    this._painting   = false;        // fog/zone brush active
-    this._paintValue = null;         // what we're painting (bool for fog, string for zone)
-    this._paintBatch = {};           // cells changed this stroke, sent on mouseup
+    this.isDragging    = false;
+    this.dragStart     = { x: 0, y: 0 };
+    this.selectedId    = null;
+    this.hoveredCell   = null;         // { x, y } grid cell under cursor
+    this._dragToken    = null;
+    this._painting     = false;        // fog/zone brush active
+    this._paintValue   = null;         // what we're painting (bool for fog, string for zone)
+    this._paintBatch   = {};           // cells changed this stroke, sent on mouseup
+    this._placingTokenId = null;       // token id being placed onto the map
     this.eventHandlers = {};
 
     this._resizeObserver = new ResizeObserver(() => this._resize());
@@ -76,6 +77,19 @@ export class Renderer {
   setTool(tool) {
     this.activeTool = tool;
     this.canvas.style.cursor = tool === 'move' ? 'grab' : 'crosshair';
+  }
+
+  /** Begin placement mode: next canvas click drops the token at that cell */
+  startPlacement(tokenId) {
+    this._placingTokenId = tokenId;
+    this.canvas.style.cursor = 'crosshair';
+  }
+
+  /** Cancel an in-progress placement (e.g. Escape key) */
+  cancelPlacement() {
+    if (!this._placingTokenId) return;
+    this._placingTokenId = null;
+    this.canvas.style.cursor = this.activeTool === 'move' ? 'grab' : 'crosshair';
   }
 
   setZoneType(type) {
@@ -394,73 +408,89 @@ export class Renderer {
     const { originX, originY, cellW, cellH } = m;
     const cellSize = Math.min(cellW, cellH);
 
+    // Ghost token: draw semi-transparent at hovered cell during placement
+    if (this._placingTokenId && this.hoveredCell) {
+      const ghost = this.tokens.get(this._placingTokenId);
+      if (ghost) {
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        this._drawSingleToken(ghost, this.hoveredCell.x, this.hoveredCell.y, m);
+        ctx.restore();
+      }
+    }
+
     for (const token of this.tokens.values()) {
       if (token.x == null || token.y == null) continue;
-
-      const px  = originX + token.x * cellW;
-      const py  = originY + token.y * cellH;
-      const r   = cellSize * 0.42;
-      const cx  = px + cellW / 2;
-      const cy  = py + cellH / 2;
-
       ctx.save();
-
-      if (token.id === this.activeTurn) {
-        ctx.shadowColor = '#c9a84c';
-        ctx.shadowBlur  = 14 / this.zoom;
-      }
-
-      const color = this._tokenColor(token);
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fillStyle = color.bg;
-      ctx.fill();
-      ctx.strokeStyle = token.id === this.selectedId ? '#c9a84c' : color.border;
-      ctx.lineWidth   = (token.id === this.selectedId ? 2.5 : 1.5) / this.zoom;
-      ctx.stroke();
-      ctx.shadowBlur  = 0;
-
-      if (token.avatarImg) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cx, cy, r - 1 / this.zoom, 0, Math.PI * 2);
-        ctx.clip();
-        ctx.drawImage(token.avatarImg, cx - r, cy - r, r * 2, r * 2);
-        ctx.restore();
-      } else {
-        ctx.fillStyle   = color.text;
-        ctx.font        = `bold ${Math.round(r * 0.75)}px "Cinzel", serif`;
-        ctx.textAlign   = 'center';
-        ctx.textBaseline= 'middle';
-        ctx.fillText(_initials(token.name), cx, cy);
-      }
-
-      if (token.conditions?.length) {
-        const dotR = 3 / this.zoom;
-        const gap  = 7 / this.zoom;
-        const startX = cx - ((token.conditions.length - 1) * gap) / 2;
-        token.conditions.slice(0, 4).forEach((cond, i) => {
-          ctx.beginPath();
-          ctx.arc(startX + i * gap, cy + r + 5 / this.zoom, dotR, 0, Math.PI * 2);
-          ctx.fillStyle = _conditionColor(cond);
-          ctx.fill();
-        });
-      }
-
-      if (token.maxHp && token.currentHp != null) {
-        const barW = cellW * 0.8;
-        const barH = 3 / this.zoom;
-        const barX = px + (cellW - barW) / 2;
-        const barY = py + cellH - barH - 2 / this.zoom;
-        const pct  = Math.max(0, Math.min(1, token.currentHp / token.maxHp));
-
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(barX, barY, barW, barH);
-        ctx.fillStyle = pct > 0.5 ? '#27ae60' : pct > 0.25 ? '#d68910' : '#e74c3c';
-        ctx.fillRect(barX, barY, barW * pct, barH);
-      }
-
+      this._drawSingleToken(token, token.x, token.y, m);
       ctx.restore();
+    }
+  }
+
+  _drawSingleToken(token, gx, gy, m) {
+    const { ctx } = this;
+    const { originX, originY, cellW, cellH } = m;
+    const cellSize = Math.min(cellW, cellH);
+
+    const px = originX + gx * cellW;
+    const py = originY + gy * cellH;
+    const r  = cellSize * 0.42;
+    const cx = px + cellW / 2;
+    const cy = py + cellH / 2;
+
+    if (token.id === this.activeTurn) {
+      ctx.shadowColor = '#c9a84c';
+      ctx.shadowBlur  = 14 / this.zoom;
+    }
+
+    const color = this._tokenColor(token);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = color.bg;
+    ctx.fill();
+    ctx.strokeStyle = token.id === this.selectedId ? '#c9a84c' : color.border;
+    ctx.lineWidth   = (token.id === this.selectedId ? 2.5 : 1.5) / this.zoom;
+    ctx.stroke();
+    ctx.shadowBlur  = 0;
+
+    if (token.avatarImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r - 1 / this.zoom, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(token.avatarImg, cx - r, cy - r, r * 2, r * 2);
+      ctx.restore();
+    } else {
+      ctx.fillStyle    = color.text;
+      ctx.font         = `bold ${Math.round(r * 0.75)}px "Cinzel", serif`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(_initials(token.name), cx, cy);
+    }
+
+    if (token.conditions?.length) {
+      const dotR   = 3 / this.zoom;
+      const gap    = 7 / this.zoom;
+      const startX = cx - ((token.conditions.length - 1) * gap) / 2;
+      token.conditions.slice(0, 4).forEach((cond, i) => {
+        ctx.beginPath();
+        ctx.arc(startX + i * gap, cy + r + 5 / this.zoom, dotR, 0, Math.PI * 2);
+        ctx.fillStyle = _conditionColor(cond);
+        ctx.fill();
+      });
+    }
+
+    if (token.maxHp && token.currentHp != null) {
+      const barW = cellW * 0.8;
+      const barH = 3 / this.zoom;
+      const barX = px + (cellW - barW) / 2;
+      const barY = py + cellH - barH - 2 / this.zoom;
+      const pct  = Math.max(0, Math.min(1, token.currentHp / token.maxHp));
+
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = pct > 0.5 ? '#27ae60' : pct > 0.25 ? '#d68910' : '#e74c3c';
+      ctx.fillRect(barX, barY, barW * pct, barH);
     }
   }
 
@@ -514,6 +544,19 @@ export class Renderer {
   _handleMouseDown(e) {
     const world = this._screenToWorld(e.offsetX, e.offsetY);
     const cell  = this._worldToCell(world.x, world.y);
+
+    // Placement mode: drop the staging token at the clicked cell
+    if (this._placingTokenId && cell) {
+      const token = this.tokens.get(this._placingTokenId);
+      if (token) {
+        token.x = cell.x;
+        token.y = cell.y;
+        this._emit('tokenMoved', { tokenId: this._placingTokenId, x: cell.x, y: cell.y });
+      }
+      this._placingTokenId = null;
+      this.canvas.style.cursor = this.activeTool === 'move' ? 'grab' : 'crosshair';
+      return;
+    }
 
     if (this.activeTool === 'move') {
       const hit = this._hitTestToken(world.x, world.y);

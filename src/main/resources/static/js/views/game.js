@@ -113,12 +113,24 @@ export async function renderObserverView({ code }, query) {
   ws.connect(code, observerToken);
   bindSessionEvents(renderer, code, 'observer');
 
+  let observerViewportLocked = false;
+
   ws.on('DM_VIEWPORT', ({ zoom, panX, panY }) => {
-    renderer.setViewport(zoom, panX, panY);
+    if (!observerViewportLocked) renderer.setViewport(zoom, panX, panY);
   });
 
-  document.getElementById('btn-zoom-inch')?.addEventListener('click', () => {
+  const btnZoomInch = document.getElementById('btn-zoom-inch');
+  const btnFollowDm = document.getElementById('btn-follow-dm');
+
+  btnZoomInch?.addEventListener('click', () => {
     renderer.zoomToInch();
+    observerViewportLocked = true;
+    if (btnFollowDm) btnFollowDm.style.display = '';
+  });
+
+  btnFollowDm?.addEventListener('click', () => {
+    observerViewportLocked = false;
+    btnFollowDm.style.display = 'none';
   });
 
   return {
@@ -341,12 +353,19 @@ function observerShell() {
     <div class="game-shell observer-layout">
       <div class="game-canvas-area" id="canvas-container">
         <canvas id="game-canvas"></canvas>
-        <button id="btn-zoom-inch" class="btn btn-ghost"
-                title="Zoom so each grid square is ~1 inch on screen"
-                style="position:absolute;bottom:var(--sp-4);right:var(--sp-4);
-                       z-index:10;opacity:0.75;font-size:0.7rem;padding:var(--sp-2) var(--sp-4)">
-          1&Prime; grid
-        </button>
+        <div style="position:absolute;bottom:var(--sp-4);right:var(--sp-4);
+                    z-index:10;display:flex;gap:var(--sp-2)">
+          <button id="btn-follow-dm" class="btn btn-ghost"
+                  title="Resume following the DM's viewport"
+                  style="display:none;opacity:0.75;font-size:0.7rem;padding:var(--sp-2) var(--sp-4)">
+            ↩ Follow DM
+          </button>
+          <button id="btn-zoom-inch" class="btn btn-ghost"
+                  title="Zoom so each grid square is ~1 inch on screen"
+                  style="opacity:0.75;font-size:0.7rem;padding:var(--sp-2) var(--sp-4)">
+            1&Prime; grid
+          </button>
+        </div>
       </div>
       <div class="initiative-strip" id="initiative-strip">
         <span style="font-family:var(--font-display);font-size:0.65rem;letter-spacing:0.1em;
@@ -403,6 +422,12 @@ function rosterEntry(sc) {
       </div>
       ${maxHp > 0 ? `<div style="margin-top:var(--sp-2)">${hpBar(hp, maxHp)}</div>` : ''}
       ${sc.conditions?.length ? `<div style="margin-top:var(--sp-2)">${conditionBadges(sc.conditions)}</div>` : ''}
+      ${sc.positionX == null ? `
+      <button class="btn btn-ghost" data-place-token="${esc(sc.id)}"
+              style="width:100%;margin-top:var(--sp-2);font-size:0.7rem;
+                     border:1px dashed var(--border);color:var(--gold)">
+        📍 Place on Map
+      </button>` : ''}
     </div>`;
 }
 
@@ -429,7 +454,12 @@ function updateRosterHp(tokenId, currentHp, maxHp) {
   renderRoster(roster);
 }
 
-function updateRosterPosition() { /* position display not shown in roster */ }
+function updateRosterPosition(tokenId, x, y) {
+  const roster = (getState('roster') || []).map(sc =>
+    sc.id === tokenId ? { ...sc, positionX: x, positionY: y } : sc);
+  setState('roster', roster);
+  renderRoster(roster);
+}
 
 // ── Initiative rendering ──────────────────────────────────────────
 
@@ -593,6 +623,25 @@ function wireDmControls(session, renderer, code) {
 
   // Canvas: token selection → open panel
   renderer.on('tokenSelected', (tokenId) => openTokenPanel(tokenId));
+
+  // Canvas: token moved or placed → broadcast via WS
+  renderer.on('tokenMoved', ({ tokenId, x, y }) => {
+    ws.send('MOVE_TOKEN', { tokenId, x, y });
+  });
+
+  // Roster: "Place on Map" button → enter placement mode
+  document.getElementById('roster-list')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-place-token]');
+    if (!btn) return;
+    e.stopPropagation();
+    renderer.startPlacement(btn.dataset.placeToken);
+    toast('Click on the map to place the token. Press Escape to cancel.', 'info', 5000);
+  });
+
+  // Escape key cancels placement mode
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') renderer.cancelPlacement();
+  });
 
   // Canvas: fog painted → persist via REST (broadcasts FOG_UPDATED to all clients)
   renderer.on('fogPainted', async (cells) => {
