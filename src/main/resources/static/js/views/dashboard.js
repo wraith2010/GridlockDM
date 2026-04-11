@@ -59,13 +59,22 @@ export async function renderDashboard() {
   document.getElementById('btn-join-session').addEventListener('click', showJoinModal);
 
   // Load data in parallel
-  const [charList, sessionList] = await Promise.allSettled([
+  const [charList, dmSessionList, playerSessionList] = await Promise.allSettled([
     characters.list(),
     sessions.mySessions(),
+    sessions.joinedSessions(),
   ]);
 
   renderCharacters(charList.status === 'fulfilled' ? charList.value : []);
-  renderSessions(sessionList.status === 'fulfilled' ? sessionList.value : []);
+
+  // Merge DM + player sessions, tag each with role, deduplicate by id
+  const dmSessions     = (dmSessionList.status     === 'fulfilled' ? dmSessionList.value     : []).map(s => ({ ...s, role: 'dm' }));
+  const joinedSessions = (playerSessionList.status === 'fulfilled' ? playerSessionList.value : []).map(s => ({ ...s, role: 'player' }));
+  const seen = new Set(dmSessions.map(s => s.id));
+  const allSessions = [...dmSessions, ...joinedSessions.filter(s => !seen.has(s.id))];
+  allSessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  renderSessions(allSessions);
 }
 
 // ── Characters panel ──────────────────────────────────────────────
@@ -153,22 +162,23 @@ function renderSessions(sessionList) {
 
   el.querySelectorAll('.session-card').forEach(card => {
     card.addEventListener('click', () => {
-      const id     = card.dataset.id;
       const status = card.dataset.status;
       if (status === 'ACTIVE' || status === 'LOBBY') {
-        navigate(`/session/${card.dataset.code}/dm`);
+        const role = card.dataset.role === 'player' ? 'play' : 'dm';
+        navigate(`/session/${card.dataset.code}/${role}`);
       }
     });
   });
 }
 
 function sessionCard(s) {
+  const roleLabel = s.role === 'player' ? `<span style="font-size:0.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Player</span>` : '';
   return `
-    <div class="session-card" data-id="${esc(s.id)}" data-code="${esc(s.inviteCode)}" data-status="${esc(s.status)}">
+    <div class="session-card" data-id="${esc(s.id)}" data-code="${esc(s.inviteCode)}" data-status="${esc(s.status)}" data-role="${esc(s.role || 'dm')}">
       <div class="session-code">${esc(s.inviteCode)}</div>
       <div class="session-info">
-        <div class="session-name">${esc(s.name)}</div>
-        <div class="session-meta">${relativeTime(s.createdAt)}</div>
+        <div class="session-name">${esc(s.name)} ${roleLabel}</div>
+        <div class="session-meta">${esc(s.dmName)} · ${relativeTime(s.createdAt)}</div>
       </div>
       ${statusPill(s.status)}
     </div>`;

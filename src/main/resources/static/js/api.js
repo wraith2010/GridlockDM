@@ -124,6 +124,9 @@ export const sessions = {
   mySessions: () =>
     request('GET', '/api/sessions/my'),
 
+  joinedSessions: () =>
+    request('GET', '/api/sessions/joined'),
+
   roster: (id) =>
     request('GET', `/api/sessions/${id}/roster`),
 

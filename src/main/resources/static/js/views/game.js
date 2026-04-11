@@ -92,17 +92,37 @@ export async function renderPlayerView({ code }) {
   const mySc = (getState('roster') || []).find(sc => sc.playerId === myUserId);
   if (mySc) { renderer.myTokenId = mySc.id; setState('myTokenId', mySc.id); }
 
+  // Show/hide place-token button based on whether the token is on the map
+  const syncPlaceBtn = () => {
+    const btn   = document.getElementById('btn-place-my-token');
+    if (!btn) return;
+    const myId  = renderer.myTokenId;
+    const roster = getState('roster') || [];
+    const sc    = roster.find(r => r.id === myId);
+    btn.style.display = (myId && sc && sc.positionX == null) ? 'block' : 'none';
+  };
+  syncPlaceBtn();
+
+  const startPlaceMyToken = () => {
+    if (!renderer.myTokenId) { toast('Your character hasn\'t joined yet.', 'info'); return; }
+    renderer.startPlacement(renderer.myTokenId);
+    toast('Click on the map to place your token. Escape to cancel.', 'info', 5000);
+  };
+
+  document.getElementById('btn-place-my-token')?.addEventListener('click', startPlaceMyToken);
+
   // Broadcast token movement when player drags or places their own token
   renderer.on('tokenMoved', ({ tokenId, x, y }) => {
     ws.send('MOVE_TOKEN', { tokenId, x, y });
+    // Once placed, hide the button
+    if (tokenId === renderer.myTokenId) syncPlaceBtn();
   });
 
-  // "Place on Map" button in the roster entry
+  // "Place on Map" button in the roster entry (kept as fallback)
   document.getElementById('roster-list')?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-place-token]');
     if (!btn) return;
     const tokenId = btn.dataset.placeToken;
-    // Players can only place their own token
     if (tokenId !== renderer.myTokenId) return;
     renderer.startPlacement(tokenId);
     toast('Click on the map to place your token. Escape to cancel.', 'info', 5000);
@@ -116,7 +136,7 @@ export async function renderPlayerView({ code }) {
 
   // If own token joins mid-session (PLAYER_JOINED WS event sets myTokenId)
   ws.on('PLAYER_JOINED', (sc) => {
-    if (sc.playerId === myUserId) { renderer.myTokenId = sc.id; setState('myTokenId', sc.id); }
+    if (sc.playerId === myUserId) { renderer.myTokenId = sc.id; setState('myTokenId', sc.id); syncPlaceBtn(); }
   });
 
   // Escape cancels placement
@@ -520,6 +540,10 @@ function playerShell() {
 
         <div class="game-panel-section" style="flex:1;overflow-y:auto">
           <div class="game-panel-label">My Character</div>
+          <button id="btn-place-my-token" class="btn btn-primary"
+                  style="width:100%;margin-bottom:var(--sp-3);display:none">
+            📍 Place My Token
+          </button>
           <div id="roster-list"></div>
         </div>
       </div>

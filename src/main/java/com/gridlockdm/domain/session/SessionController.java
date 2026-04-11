@@ -275,6 +275,17 @@ public class SessionController {
                               .toList());
     }
 
+    // ── Player: sessions I've joined ──────────────────────────────────────────
+
+    @GetMapping("/joined")
+    public ResponseEntity<List<SessionSummaryDto>> joinedSessions(@AuthenticationPrincipal User player) {
+        return ResponseEntity.ok(
+                sessionService.getPlayerSessions(player.getId())
+                              .stream()
+                              .map(SessionSummaryDto::from)
+                              .toList());
+    }
+
     // ── Request / Response DTOs ───────────────────────────────────────────────
 
     public record CreateSessionRequest(

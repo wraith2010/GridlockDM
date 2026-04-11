@@ -1,5 +1,6 @@
 package com.gridlockdm.config;
 
+import com.gridlockdm.domain.user.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Configuration;
@@ -16,6 +17,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.config.annotation.*;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * STOMP-over-WebSocket configuration.
@@ -36,6 +38,7 @@ import java.util.List;
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final UserRepository    userRepository;
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
@@ -70,12 +73,24 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     if (authHeader != null && authHeader.startsWith("Bearer ")) {
                         String token = authHeader.substring(7);
                         if (jwtTokenProvider.isValid(token)) {
-                            String role = jwtTokenProvider.getRole(token);
-                            var auth = new UsernamePasswordAuthenticationToken(
-                                    jwtTokenProvider.getSubject(token),
-                                    null,
-                                    List.of(new SimpleGrantedAuthority("ROLE_" + role)));
-                            accessor.setUser(auth);
+                            String role    = jwtTokenProvider.getRole(token);
+                            String subject = jwtTokenProvider.getSubject(token);
+                            if ("OBSERVER".equals(role)) {
+                                // Observer: no DB lookup needed
+                                var auth = new UsernamePasswordAuthenticationToken(
+                                        subject, null,
+                                        List.of(new SimpleGrantedAuthority("ROLE_OBSERVER")));
+                                accessor.setUser(auth);
+                            } else {
+                                // Regular user: set the User entity as principal so
+                                // @AuthenticationPrincipal User user works in @MessageMapping handlers
+                                UUID userId = UUID.fromString(subject);
+                                userRepository.findById(userId).ifPresent(user -> {
+                                    var auth = new UsernamePasswordAuthenticationToken(
+                                            user, null, user.getAuthorities());
+                                    accessor.setUser(auth);
+                                });
+                            }
                             log.debug("WebSocket CONNECT authenticated: role={}", role);
                         } else {
                             log.warn("WebSocket CONNECT rejected: invalid token");

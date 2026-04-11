@@ -6,9 +6,10 @@ import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.stereotype.Controller;
 
+import java.security.Principal;
 import java.util.Map;
 import java.util.UUID;
 
@@ -27,7 +28,7 @@ public class GameActionController {
     public void handleAction(
             @DestinationVariable String code,
             @Payload Map<String, Object> action,
-            @AuthenticationPrincipal User user) {
+            Principal principal) {
 
         String type    = (String) action.get("type");
         Object payload = action.get("payload");
@@ -39,6 +40,8 @@ public class GameActionController {
                     new SessionService.SessionEvent("MAP_ROTATED", payload));
 
             case "MOVE_TOKEN" -> {
+                User user = resolveUser(principal);
+                if (user == null) return;
                 if (payload instanceof Map<?, ?> p) {
                     UUID   tokenId = UUID.fromString((String) p.get("tokenId"));
                     double x       = toDouble(p.get("x"));
@@ -49,6 +52,19 @@ public class GameActionController {
 
             default -> { /* unknown action — ignore */ }
         }
+    }
+
+    /**
+     * Unwrap a User entity from the STOMP session's Principal.
+     * The WebSocket interceptor sets a UsernamePasswordAuthenticationToken
+     * with the User entity as its principal.
+     */
+    private static User resolveUser(Principal principal) {
+        if (principal instanceof UsernamePasswordAuthenticationToken token
+                && token.getPrincipal() instanceof User user) {
+            return user;
+        }
+        return null;
     }
 
     private static double toDouble(Object v) {

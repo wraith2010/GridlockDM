@@ -100,7 +100,15 @@ public class SessionService {
         Character character = characterRepo.findByIdAndOwnerId(characterId, player.getId())
                 .orElseThrow(() -> new ForbiddenException("Character not found or not owned by you"));
 
-        // Prevent duplicate requests
+        // Already an active participant — return existing SessionCharacter (idempotent)
+        SessionCharacter existingSc = sessionCharRepo
+                .findBySessionIdAndPlayerId(session.getId(), player.getId())
+                .orElse(null);
+        if (existingSc != null && existingSc.isActive()) {
+            return JoinResult.accepted(existingSc);
+        }
+
+        // Prevent duplicate pending requests
         if (inviteRepo.existsBySessionIdAndUserIdAndStatus(
                 session.getId(), player.getId(), InviteStatus.PENDING)) {
             throw new IllegalStateException("You already have a pending join request for this session");
@@ -372,6 +380,11 @@ public class SessionService {
     @Transactional(readOnly = true)
     public List<Session> getDmSessions(UUID dmId) {
         return sessionRepo.findByDmIdOrderByCreatedAtDesc(dmId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Session> getPlayerSessions(UUID playerId) {
+        return sessionCharRepo.findActiveSessionsByPlayerId(playerId);
     }
 
     @Transactional(readOnly = true)

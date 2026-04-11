@@ -2,6 +2,7 @@ package com.gridlockdm.domain.session;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -18,4 +19,7 @@ public interface SessionCharacterRepository extends JpaRepository<SessionCharact
     Optional<SessionCharacter> findBySessionIdAndPlayerId(UUID sessionId, UUID playerId);
 
     boolean existsBySessionIdAndCharacterId(UUID sessionId, UUID characterId);
+
+    @Query("SELECT sc.session FROM SessionCharacter sc WHERE sc.player.id = :playerId AND sc.active = true ORDER BY sc.session.createdAt DESC")
+    List<Session> findActiveSessionsByPlayerId(@Param("playerId") UUID playerId);
 }
