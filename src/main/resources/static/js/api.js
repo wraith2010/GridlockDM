@@ -168,6 +168,12 @@ export const sessions = {
 
   updateFog: (id, cells) =>
     request('PATCH', `/api/sessions/${id}/fog`, cells),
+
+  addSpellOverlay: (id, overlay) =>
+    request('POST', `/api/sessions/${id}/spell-overlays`, overlay),
+
+  removeSpellOverlay: (id, overlayId) =>
+    request('DELETE', `/api/sessions/${id}/spell-overlays/${overlayId}`),
 };
 
 export { ApiError };

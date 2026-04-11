@@ -17,4 +17,4 @@ docker compose up -d --build
 
 echo Done.
 
-docker compose logs -f -t
+REM docker compose logs -f -t

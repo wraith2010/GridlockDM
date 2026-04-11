@@ -179,6 +179,28 @@ public class SessionController {
         return ResponseEntity.noContent().build();
     }
 
+    // ── DM: spell overlays ───────────────────────────────────────────────────
+
+    @PostMapping("/{id}/spell-overlays")
+    public ResponseEntity<Void> addSpellOverlay(
+            @PathVariable UUID id,
+            @RequestBody Map<String, Object> overlay,
+            @AuthenticationPrincipal User user) {
+
+        sessionService.addSpellOverlay(id, user, overlay);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{id}/spell-overlays/{overlayId}")
+    public ResponseEntity<Void> removeSpellOverlay(
+            @PathVariable UUID id,
+            @PathVariable String overlayId,
+            @AuthenticationPrincipal User user) {
+
+        sessionService.removeSpellOverlay(id, user, overlayId);
+        return ResponseEntity.noContent().build();
+    }
+
     // ── DM: upload battlemap ──────────────────────────────────────────────────
 
     /**
@@ -295,14 +317,16 @@ public class SessionController {
             String mapImageUrl,
             Object gridConfig,
             Object zones,
-            Object fogState
+            Object fogState,
+            Object activeOverlays
     ) {
         static SessionInfoDto from(Session s) {
             return new SessionInfoDto(
                     s.getId(), s.getName(), s.getInviteCode(),
                     s.getInviteMode().name(), s.getStatus().name(),
                     s.getDm().getDisplayName(),
-                    s.getMapImageUrl(), s.getGridConfig(), s.getZones(), s.getFogState());
+                    s.getMapImageUrl(), s.getGridConfig(), s.getZones(), s.getFogState(),
+                    s.getActiveOverlays() != null ? s.getActiveOverlays() : java.util.List.of());
         }
     }
 }

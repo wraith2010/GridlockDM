@@ -7,6 +7,8 @@ services:
       POSTGRES_USER:     ${DB_USERNAME:-gridlock}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-gridlock}
       POSTGRES_DB:       gridlockdm
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -14,7 +16,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
+    restart: no
 
   app:
     build:
@@ -35,7 +37,7 @@ services:
       - "${PORT:-8080}:${PORT:-8080}"
     volumes:
       - map_uploads:/app/uploads
-    restart: unless-stopped
+    restart: no
 
 volumes:
   postgres_data:

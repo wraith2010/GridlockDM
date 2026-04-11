@@ -37,6 +37,9 @@ export class Renderer {
     this.fogCells    = new Map();   // "x,y" → bool (true = revealed)
     this.zoneCells   = new Map();   // "x,y" → zone type string
     this.overlays    = [];
+    this.spellOverlays   = [];       // persistent AoE overlays
+    this._spellPlacement = null;     // { template, phase:'origin'|'direction', originPx, previewPx, onPlaced }
+    this.myTokenId   = options.myTokenId || null;  // player's own SC id — restricts drag to own token
     this.activeTurn  = null;
     this.activeTool  = 'move';
     this.activeZoneType = 'difficult';
@@ -218,6 +221,34 @@ export class Renderer {
     setTimeout(() => {
       this.overlays = this.overlays.filter(o => o !== overlay);
     }, overlay.duration || 3000);
+  }
+
+  /** Add a persistent spell overlay (from DB load or WS event). Deduplicates by id. */
+  addSpellOverlay(overlay) {
+    if (!this.spellOverlays.find(o => o.id === overlay.id))
+      this.spellOverlays.push(overlay);
+  }
+
+  /** Remove a persistent spell overlay by id. */
+  removeSpellOverlay(id) {
+    this.spellOverlays = this.spellOverlays.filter(o => o.id !== id);
+  }
+
+  /**
+   * Begin interactive spell placement on the canvas.
+   * @param {Object} template — { shape, label, color, sizeFt, visibility }
+   * @param {Function} onPlaced — callback(completedOverlay)
+   */
+  startSpellPlacement(template, onPlaced) {
+    this._spellPlacement = { template, phase: 'origin', originPx: null, previewPx: null, onPlaced };
+    this.canvas.style.cursor = 'crosshair';
+  }
+
+  /** Cancel an in-progress spell placement (e.g. Escape key). */
+  cancelSpellPlacement() {
+    if (!this._spellPlacement) return;
+    this._spellPlacement = null;
+    this.canvas.style.cursor = this.activeTool === 'move' ? 'grab' : 'crosshair';
   }
 
   /** Register event handler: 'tokenSelected' | 'tokenMoved' | 'fogPainted' | 'zonesPainted' */
@@ -516,12 +547,112 @@ export class Renderer {
     }
   }
 
+  _finalizeSpellOverlay(template, originPx, direction) {
+    return { id: crypto.randomUUID(), ...template, origin: { x: originPx.x, y: originPx.y }, direction };
+  }
+
   _drawOverlays() {
+    // Ephemeral overlays (e.g. movement range)
     for (const overlay of this.overlays) {
-      if (overlay.type === 'MOVEMENT_RANGE') {
-        this._drawMovementRange(overlay);
-      }
+      if (overlay.type === 'MOVEMENT_RANGE') this._drawMovementRange(overlay);
     }
+
+    // Persistent spell AoE overlays
+    const m = this._gridMetrics();
+    if (!m) return;
+    for (const overlay of this.spellOverlays) {
+      this._drawSpellOverlay(overlay, m);
+    }
+
+    // Live placement preview
+    if (this._spellPlacement?.previewPx) {
+      const sp     = this._spellPlacement;
+      const origin = sp.originPx || sp.previewPx;
+      let dir = null;
+      if (sp.phase === 'direction' && sp.originPx) {
+        dir = Math.atan2(sp.previewPx.y - sp.originPx.y, sp.previewPx.x - sp.originPx.x) * 180 / Math.PI;
+      }
+      const preview = { ...sp.template, origin: { x: origin.x, y: origin.y }, direction: dir };
+      this.ctx.save();
+      this.ctx.globalAlpha = 0.55;
+      this._drawSpellOverlay(preview, m);
+      this.ctx.restore();
+    }
+  }
+
+  /** Convert feet to canvas pixels using grid cell size (one cell = 5ft). */
+  _feetToPx(feet, m) {
+    return feet * ((m.cellW + m.cellH) / 2) / 5;
+  }
+
+  _drawSpellOverlay(overlay, m) {
+    const { ctx } = this;
+    const { shape, color, sizeFt, label, origin, direction } = overlay;
+    if (!origin) return;
+
+    const r   = this._feetToPx(sizeFt, m);
+    const ox  = origin.x;
+    const oy  = origin.y;
+    const hex = color || '#e25822';
+
+    ctx.save();
+    ctx.strokeStyle = hex;
+    ctx.fillStyle   = hex + '44';   // ~27% opacity fill
+    ctx.lineWidth   = 2 / this.zoom;
+
+    if (shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(ox, oy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+    } else if (shape === 'cube') {
+      ctx.beginPath();
+      ctx.rect(ox - r, oy - r, r * 2, r * 2);
+      ctx.fill();
+      ctx.stroke();
+
+    } else if (shape === 'cone') {
+      const d  = ((direction ?? 0) * Math.PI) / 180;
+      const ha = Math.PI / 4;   // 45° half-angle → 90° total cone width (D&D 5E RAW)
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox + r * Math.cos(d - ha), oy + r * Math.sin(d - ha));
+      ctx.arc(ox, oy, r, d - ha, d + ha);
+      ctx.lineTo(ox, oy);
+      ctx.fill();
+      ctx.stroke();
+
+    } else if (shape === 'line') {
+      const w   = this._feetToPx(5, m);   // 5ft wide (one grid cell)
+      const d   = ((direction ?? 0) * Math.PI) / 180;
+      const pd  = d + Math.PI / 2;
+      const dx  = r * Math.cos(d),  dy = r * Math.sin(d);
+      const px  = (w / 2) * Math.cos(pd), py = (w / 2) * Math.sin(pd);
+      ctx.beginPath();
+      ctx.moveTo(ox + px,      oy + py);
+      ctx.lineTo(ox + dx + px, oy + dy + py);
+      ctx.lineTo(ox + dx - px, oy + dy - py);
+      ctx.lineTo(ox - px,      oy - py);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Label above the overlay origin
+    if (label) {
+      ctx.fillStyle    = hex;
+      ctx.globalAlpha  = 0.9;
+      ctx.font         = `bold ${Math.round(12 / this.zoom)}px "Cinzel", serif`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.shadowColor  = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur   = 3 / this.zoom;
+      ctx.fillText(label, ox, oy - (shape === 'circle' ? r : 0) - 4 / this.zoom);
+      ctx.shadowBlur   = 0;
+    }
+
+    ctx.restore();
   }
 
   _drawMovementRange(overlay) {
@@ -567,6 +698,31 @@ export class Renderer {
     const world = this._screenToWorld(e.offsetX, e.offsetY);
     const cell  = this._worldToCell(world.x, world.y);
 
+    // Spell overlay placement mode
+    if (this._spellPlacement) {
+      const sp       = this._spellPlacement;
+      const needsDir = sp.template.shape === 'cone' || sp.template.shape === 'line';
+      if (sp.phase === 'origin') {
+        if (!needsDir) {
+          // Single-click shapes (circle, cube): complete immediately
+          sp.onPlaced(this._finalizeSpellOverlay(sp.template, world, null));
+          this._spellPlacement = null;
+          this.canvas.style.cursor = 'grab';
+        } else {
+          // Directional shapes (cone, line): first click sets origin, wait for direction
+          sp.originPx = world;
+          sp.phase    = 'direction';
+        }
+      } else {
+        // Second click: compute direction from origin to cursor and finalize
+        const dir = Math.atan2(world.y - sp.originPx.y, world.x - sp.originPx.x) * 180 / Math.PI;
+        sp.onPlaced(this._finalizeSpellOverlay(sp.template, sp.originPx, dir));
+        this._spellPlacement = null;
+        this.canvas.style.cursor = 'grab';
+      }
+      return;
+    }
+
     // Placement mode: drop the staging token at the clicked cell
     if (this._placingTokenId && cell) {
       const token = this.tokens.get(this._placingTokenId);
@@ -583,8 +739,10 @@ export class Renderer {
     if (this.activeTool === 'move') {
       const hit = this._hitTestToken(world.x, world.y);
       if (hit) {
+        // DM can drag any token; players can only drag their own
+        const canDrag = this.options.role === 'dm' || hit.id === this.myTokenId;
         this.selectedId = hit.id;
-        this._dragToken = hit;
+        this._dragToken = canDrag ? hit : null;
         this._emit('tokenSelected', hit.id);
       } else {
         this.selectedId = null;
@@ -618,6 +776,9 @@ export class Renderer {
     const world = this._screenToWorld(e.offsetX, e.offsetY);
     const cell  = this._worldToCell(world.x, world.y);
 
+    // Track cursor position for spell overlay preview
+    if (this._spellPlacement) this._spellPlacement.previewPx = world;
+
     // Update hover cell
     if (cell && this.gridConfig) {
       const { cols, rows } = this.gridConfig;
@@ -630,7 +791,7 @@ export class Renderer {
       this.panY = e.clientY - this.dragStart.y;
     }
 
-    if (this._dragToken && this.options.role === 'dm') {
+    if (this._dragToken && (this.options.role === 'dm' || this._dragToken.id === this.myTokenId)) {
       const c = this._worldToCell(world.x, world.y);
       this._dragToken.x = c.x;
       this._dragToken.y = c.y;
@@ -643,7 +804,7 @@ export class Renderer {
   }
 
   _handleMouseUp(e) {
-    if (this._dragToken && this.options.role === 'dm') {
+    if (this._dragToken && (this.options.role === 'dm' || this._dragToken.id === this.myTokenId)) {
       const world = this._screenToWorld(e.offsetX, e.offsetY);
       const cell  = this._worldToCell(world.x, world.y);
       this._emit('tokenMoved', { tokenId: this._dragToken.id, x: cell.x, y: cell.y });

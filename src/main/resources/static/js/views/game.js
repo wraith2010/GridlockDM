@@ -25,15 +25,16 @@ export async function renderDmView({ code }) {
   const canvas   = document.getElementById('game-canvas');
   const renderer = new Renderer(canvas, { role: 'dm' });
 
-  // Wire WebSocket
-  ws.connect(code);
-  bindSessionEvents(renderer, code, 'dm');
-
   // Load existing map if already uploaded
   if (session.mapImageUrl) {
     renderer.loadMap(session.mapImageUrl, session.gridConfig);
     if (session.zones)    renderer.updateZones(session.zones);
     if (session.fogState) renderer.updateFog(session.fogState);
+  }
+
+  // Load persisted spell overlays (DM sees all)
+  if (session.activeOverlays?.length) {
+    session.activeOverlays.forEach(o => renderer.addSpellOverlay(o));
   }
 
   // Load roster
@@ -42,8 +43,12 @@ export async function renderDmView({ code }) {
   // DM-specific: pending invites panel
   await refreshPendingInvites(session.id);
 
-  // Wire DM controls
-  wireDmControls(session, renderer, code);
+  // Wire DM controls (returns callbacks needed by bindSessionEvents)
+  const dmCallbacks = wireDmControls(session, renderer, code);
+
+  // Wire WebSocket
+  ws.connect(code);
+  bindSessionEvents(renderer, code, 'dm', dmCallbacks);
 
   return {
     cleanup: () => { ws.disconnect(); renderer.destroy(); }
@@ -67,16 +72,60 @@ export async function renderPlayerView({ code }) {
   const canvas   = document.getElementById('game-canvas');
   const renderer = new Renderer(canvas, { role: 'player' });
 
-  ws.connect(code);
-  bindSessionEvents(renderer, code, 'player');
-
   if (session.mapImageUrl) {
     renderer.loadMap(session.mapImageUrl, session.gridConfig);
     if (session.zones)    renderer.updateZones(session.zones);
     if (session.fogState) renderer.updateFog(session.fogState);
   }
 
+  // Load persisted spell overlays (players only see 'everyone' overlays)
+  if (session.activeOverlays?.length) {
+    session.activeOverlays
+      .filter(o => o.visibility === 'everyone')
+      .forEach(o => renderer.addSpellOverlay(o));
+  }
+
   await refreshRoster(session.id, renderer);
+
+  // Identify this player's own token so they can drag it
+  const myUserId = getState('user')?.id;
+  const mySc = (getState('roster') || []).find(sc => sc.playerId === myUserId);
+  if (mySc) { renderer.myTokenId = mySc.id; setState('myTokenId', mySc.id); }
+
+  // Broadcast token movement when player drags or places their own token
+  renderer.on('tokenMoved', ({ tokenId, x, y }) => {
+    ws.send('MOVE_TOKEN', { tokenId, x, y });
+  });
+
+  // "Place on Map" button in the roster entry
+  document.getElementById('roster-list')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-place-token]');
+    if (!btn) return;
+    const tokenId = btn.dataset.placeToken;
+    // Players can only place their own token
+    if (tokenId !== renderer.myTokenId) return;
+    renderer.startPlacement(tokenId);
+    toast('Click on the map to place your token. Escape to cancel.', 'info', 5000);
+  });
+
+  // Wire player spell controls (returns callbacks for WS events)
+  const playerCallbacks = wirePlayerSpellControls(session, renderer);
+
+  ws.connect(code);
+  bindSessionEvents(renderer, code, 'player', playerCallbacks);
+
+  // If own token joins mid-session (PLAYER_JOINED WS event sets myTokenId)
+  ws.on('PLAYER_JOINED', (sc) => {
+    if (sc.playerId === myUserId) { renderer.myTokenId = sc.id; setState('myTokenId', sc.id); }
+  });
+
+  // Escape cancels placement
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      renderer.cancelPlacement();
+      renderer.cancelSpellPlacement();
+    }
+  });
 
   return {
     cleanup: () => { ws.disconnect(); renderer.destroy(); }
@@ -106,6 +155,12 @@ export async function renderObserverView({ code }, query) {
     renderer.loadMap(session.mapImageUrl, session.gridConfig);
     if (session.zones)    renderer.updateZones(session.zones);
     if (session.fogState) renderer.updateFog(session.fogState);
+  }
+  // Load persisted spell overlays (observers only see 'everyone' overlays)
+  if (session?.activeOverlays?.length) {
+    session.activeOverlays
+      .filter(o => o.visibility === 'everyone')
+      .forEach(o => renderer.addSpellOverlay(o));
   }
   if (session) await refreshRoster(session.id, renderer);
 
@@ -140,7 +195,7 @@ export async function renderObserverView({ code }, query) {
 
 // ── Shared: bind WebSocket events to renderer ─────────────────────
 
-function bindSessionEvents(renderer, code, role) {
+function bindSessionEvents(renderer, code, role, dmCallbacks = {}) {
   ws.on('PLAYER_JOINED', (sc) => {
     updateRosterEntry(sc);
     renderer.addToken(sc);
@@ -205,6 +260,17 @@ function bindSessionEvents(renderer, code, role) {
     setTimeout(() => navigate('/dashboard'), 2000);
   });
 
+  // Spell overlays (broadcast for 'everyone' visibility)
+  ws.on('SPELL_OVERLAY_ADDED', (overlay) => {
+    renderer.addSpellOverlay(overlay);
+    dmCallbacks.refreshSpellOverlayList?.();
+  });
+
+  ws.on('SPELL_OVERLAY_REMOVED', ({ id }) => {
+    renderer.removeSpellOverlay(id);
+    dmCallbacks.refreshSpellOverlayList?.();
+  });
+
   // DM only: join requests
   if (role === 'dm') {
     ws.on('JOIN_REQUEST', (invite) => {
@@ -256,6 +322,9 @@ function dmShell(code) {
             <button class="btn btn-ghost" style="justify-content:flex-start;gap:var(--sp-3)" id="tool-ruler">
               📏 Ruler
             </button>
+            <button class="btn btn-ghost" style="justify-content:flex-start;gap:var(--sp-3)" id="tool-spell">
+              ✨ Spell Overlay
+            </button>
           </div>
         </div>
 
@@ -272,6 +341,63 @@ function dmShell(code) {
                 ${def.label}
               </button>`).join('')}
           </div>
+        </div>
+
+        <!-- Spell overlay panel (shown when spell tool active) -->
+        <div class="game-panel-section" id="spell-overlay-panel" style="display:none">
+          <div class="game-panel-label">Spell AoE</div>
+          <div style="margin-bottom:var(--sp-2)">
+            <label style="font-size:0.7rem;color:var(--text-muted)">Preset</label>
+            <select id="spell-preset" style="width:100%;margin-top:var(--sp-1);background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+              <option value="">-- custom --</option>
+              <option value='{"shape":"circle","label":"Fireball","color":"#e25822","sizeFt":20}'>Fireball (20ft)</option>
+              <option value='{"shape":"cone","label":"Burning Hands","color":"#ff4500","sizeFt":15}'>Burning Hands (15ft)</option>
+              <option value='{"shape":"cone","label":"Cone of Cold","color":"#87ceeb","sizeFt":60}'>Cone of Cold (60ft)</option>
+              <option value='{"shape":"line","label":"Lightning Bolt","color":"#f7d358","sizeFt":100}'>Lightning Bolt (100ft)</option>
+              <option value='{"shape":"cube","label":"Thunderwave","color":"#85c1e9","sizeFt":15}'>Thunderwave (15ft)</option>
+              <option value='{"shape":"cube","label":"Hypnotic Pattern","color":"#c39bd3","sizeFt":30}'>Hypnotic Pattern (30ft)</option>
+              <option value='{"shape":"circle","label":"Spirit Guardians","color":"#f9e79f","sizeFt":15}'>Spirit Guardians (15ft)</option>
+              <option value='{"shape":"circle","label":"Silence","color":"#808080","sizeFt":20}'>Silence (20ft)</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+            <div style="flex:1">
+              <label style="font-size:0.7rem;color:var(--text-muted)">Shape</label>
+              <select id="spell-shape" style="width:100%;margin-top:var(--sp-1);background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+                <option value="circle">Circle/Sphere</option>
+                <option value="cone">Cone (90°)</option>
+                <option value="line">Line</option>
+                <option value="cube">Cube/Square</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label style="font-size:0.7rem;color:var(--text-muted)">Size (ft)</label>
+              <input type="number" id="spell-size" value="20" min="5" max="500" step="5"
+                     style="width:100%;margin-top:var(--sp-1);background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+            </div>
+          </div>
+          <div style="margin-bottom:var(--sp-2)">
+            <label style="font-size:0.7rem;color:var(--text-muted)">Label</label>
+            <input type="text" id="spell-label" placeholder="Spell name" maxlength="30"
+                   style="width:100%;margin-top:var(--sp-1);background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+          </div>
+          <div style="display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-2)">
+            <label style="font-size:0.7rem;color:var(--text-muted)">Color</label>
+            <input type="color" id="spell-color" value="#e25822"
+                   style="width:32px;height:24px;border:none;background:none;cursor:pointer;padding:0">
+          </div>
+          <div style="margin-bottom:var(--sp-3)">
+            <label style="font-size:0.7rem;color:var(--text-muted)">Visibility</label>
+            <select id="spell-visibility" style="width:100%;margin-top:var(--sp-1);background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+              <option value="everyone">Everyone</option>
+              <option value="dm_only">DM Only</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-place-spell" style="width:100%;margin-bottom:var(--sp-2)">
+            Place on Map
+          </button>
+          <div class="game-panel-label" style="margin-top:var(--sp-3)">Active Overlays</div>
+          <div id="spell-overlay-list" style="display:flex;flex-direction:column;gap:var(--sp-1)"></div>
         </div>
 
         <!-- Map upload -->
@@ -348,6 +474,50 @@ function playerShell() {
           <div class="game-panel-label">Initiative</div>
           <div id="initiative-list" class="initiative-list"></div>
         </div>
+
+        <!-- Spell AoE overlays -->
+        <div class="game-panel-section">
+          <div class="game-panel-label">Spell AoE</div>
+          <div style="margin-bottom:var(--sp-2)">
+            <select id="spell-preset" style="width:100%;background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+              <option value="">-- preset --</option>
+              <option value='{"shape":"circle","label":"Fireball","color":"#e25822","sizeFt":20}'>Fireball (20ft)</option>
+              <option value='{"shape":"cone","label":"Burning Hands","color":"#ff4500","sizeFt":15}'>Burning Hands (15ft)</option>
+              <option value='{"shape":"cone","label":"Cone of Cold","color":"#87ceeb","sizeFt":60}'>Cone of Cold (60ft)</option>
+              <option value='{"shape":"line","label":"Lightning Bolt","color":"#f7d358","sizeFt":100}'>Lightning Bolt (100ft)</option>
+              <option value='{"shape":"cube","label":"Thunderwave","color":"#85c1e9","sizeFt":15}'>Thunderwave (15ft)</option>
+              <option value='{"shape":"cube","label":"Hypnotic Pattern","color":"#c39bd3","sizeFt":30}'>Hypnotic Pattern (30ft)</option>
+              <option value='{"shape":"circle","label":"Spirit Guardians","color":"#f9e79f","sizeFt":15}'>Spirit Guardians (15ft)</option>
+              <option value='{"shape":"circle","label":"Silence","color":"#808080","sizeFt":20}'>Silence (20ft)</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+            <div style="flex:1">
+              <select id="spell-shape" style="width:100%;background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+                <option value="circle">Circle</option>
+                <option value="cone">Cone (90°)</option>
+                <option value="line">Line</option>
+                <option value="cube">Cube</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <input type="number" id="spell-size" value="20" min="5" max="500" step="5"
+                     placeholder="ft" title="Size in feet"
+                     style="width:100%;background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+            </div>
+          </div>
+          <div style="display:flex;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-2)">
+            <input type="text" id="spell-label" placeholder="Spell name" maxlength="30"
+                   style="flex:1;background:var(--bg-raised);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-1) var(--sp-2);font-size:0.75rem">
+            <input type="color" id="spell-color" value="#e25822"
+                   style="width:28px;height:28px;border:none;background:none;cursor:pointer;padding:0;flex-shrink:0">
+          </div>
+          <button class="btn btn-primary" id="btn-place-spell" style="width:100%;margin-bottom:var(--sp-2)">
+            ✨ Cast Spell
+          </button>
+          <div id="spell-overlay-list" style="display:flex;flex-direction:column;gap:var(--sp-1)"></div>
+        </div>
+
         <div class="game-panel-section" style="flex:1;overflow-y:auto">
           <div class="game-panel-label">My Character</div>
           <div id="roster-list"></div>
@@ -398,10 +568,10 @@ async function refreshRoster(sessionId, renderer) {
   } catch { /* session may not have players yet */ }
 }
 
-function renderRoster(roster) {
+function renderRoster(roster, myTokenId = getState('myTokenId') ?? null) {
   const el = document.getElementById('roster-list');
   if (!el) return;
-  el.innerHTML = roster.map(sc => rosterEntry(sc)).join('');
+  el.innerHTML = roster.map(sc => rosterEntry(sc, myTokenId)).join('');
 
   // DM: clicking a token in roster opens condition editor
   el.querySelectorAll('.roster-entry[data-token-id]').forEach(entry => {
@@ -409,7 +579,7 @@ function renderRoster(roster) {
   });
 }
 
-function rosterEntry(sc) {
+function rosterEntry(sc, myTokenId = null) {
   const hp    = sc.currentHp ?? 0;
   const maxHp = sc.maxHp    ?? 0;
   const hpPct = maxHp > 0 ? Math.round((hp / maxHp) * 100) : null;
@@ -432,7 +602,7 @@ function rosterEntry(sc) {
       </div>
       ${maxHp > 0 ? `<div style="margin-top:var(--sp-2)">${hpBar(hp, maxHp)}</div>` : ''}
       ${sc.conditions?.length ? `<div style="margin-top:var(--sp-2)">${conditionBadges(sc.conditions)}</div>` : ''}
-      ${sc.positionX == null ? `
+      ${sc.positionX == null && (myTokenId === null || sc.id === myTokenId) ? `
       <button class="btn btn-ghost" data-place-token="${esc(sc.id)}"
               style="width:100%;margin-top:var(--sp-2);font-size:0.7rem;
                      border:1px dashed var(--border);color:var(--gold)">
@@ -557,11 +727,94 @@ function addPendingInvite(invite) {
   list.appendChild(el);
 }
 
+// ── Player Spell Controls ─────────────────────────────────────────
+
+function wirePlayerSpellControls(session, renderer) {
+  const currentUserId = getState('user')?.id;
+
+  // Preset auto-fills shape/label/color/size
+  document.getElementById('spell-preset')?.addEventListener('change', (e) => {
+    if (!e.target.value) return;
+    try {
+      const p = JSON.parse(e.target.value);
+      document.getElementById('spell-shape').value = p.shape;
+      document.getElementById('spell-label').value = p.label;
+      document.getElementById('spell-color').value = p.color;
+      document.getElementById('spell-size').value  = p.sizeFt;
+    } catch { /* ignore */ }
+  });
+
+  // Active overlay list — shows only overlays the player created
+  const refreshSpellOverlayList = () => {
+    const list = document.getElementById('spell-overlay-list');
+    if (!list) return;
+    const mine = renderer.spellOverlays.filter(o => o.createdBy === currentUserId);
+    if (!mine.length) {
+      list.innerHTML = '<div style="font-size:0.72rem;color:var(--text-muted)">No active spells</div>';
+      return;
+    }
+    list.innerHTML = mine.map(o => `
+      <div style="display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);
+                  background:var(--bg-raised);border:1px solid var(--border-dim);border-radius:var(--radius-sm)">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+                     background:${esc(o.color || '#888')};flex-shrink:0"></span>
+        <span style="flex:1;font-size:0.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${esc(o.label || o.shape)} <span style="color:var(--text-muted)">${o.sizeFt}ft</span>
+        </span>
+        <button class="btn btn-ghost" data-remove-overlay="${esc(o.id)}"
+                style="font-size:0.7rem;padding:2px 6px;color:var(--red-bright)" title="Dismiss">✕</button>
+      </div>`).join('');
+
+    list.querySelectorAll('[data-remove-overlay]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const overlayId = btn.dataset.removeOverlay;
+        try {
+          await sessions.removeSpellOverlay(session.id, overlayId);
+          renderer.removeSpellOverlay(overlayId);
+          refreshSpellOverlayList();
+          toast('Spell dismissed', 'info');
+        } catch (err) { toast(err.message || 'Failed to dismiss spell', 'error'); }
+      });
+    });
+  };
+
+  // Cast Spell button — enter placement mode
+  document.getElementById('btn-place-spell')?.addEventListener('click', () => {
+    const shape  = document.getElementById('spell-shape')?.value || 'circle';
+    const label  = document.getElementById('spell-label')?.value.trim() || '';
+    const color  = document.getElementById('spell-color')?.value || '#e25822';
+    const sizeFt = parseInt(document.getElementById('spell-size')?.value, 10) || 20;
+    const template = { shape, label, color, sizeFt, visibility: 'everyone' };
+
+    const needsDir = shape === 'cone' || shape === 'line';
+    toast(
+      needsDir
+        ? 'Click to set origin, then click to set direction. Escape to cancel.'
+        : 'Click on the map to place. Escape to cancel.',
+      'info', 5000
+    );
+
+    renderer.startSpellPlacement(template, async (overlay) => {
+      try {
+        await sessions.addSpellOverlay(session.id, overlay);
+        renderer.addSpellOverlay(overlay);   // optimistic add; WS event deduplicates
+        refreshSpellOverlayList();
+        toast(`${overlay.label || 'Spell'} cast!`, 'success');
+      } catch (err) { toast(err.message || 'Failed to cast spell', 'error'); }
+    });
+  });
+
+  // Show initial list (overlays loaded before connect)
+  refreshSpellOverlayList();
+
+  return { refreshSpellOverlayList };
+}
+
 // ── DM Controls ───────────────────────────────────────────────────
 
 function wireDmControls(session, renderer, code) {
   // Tool switching
-  const tools = { move: 'move', fog: 'fog', zone: 'zone', ruler: 'ruler' };
+  const tools = { move: 'move', fog: 'fog', zone: 'zone', ruler: 'ruler', spell: 'spell' };
   Object.entries(tools).forEach(([key, mode]) => {
     document.getElementById(`tool-${key}`)?.addEventListener('click', () => {
       document.querySelectorAll('[id^="tool-"]').forEach(b => b.classList.remove('active'));
@@ -648,9 +901,12 @@ function wireDmControls(session, renderer, code) {
     toast('Click on the map to place the token. Press Escape to cancel.', 'info', 5000);
   });
 
-  // Escape key cancels placement mode
+  // Escape key cancels token placement and spell placement
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') renderer.cancelPlacement();
+    if (e.key === 'Escape') {
+      renderer.cancelPlacement();
+      renderer.cancelSpellPlacement();
+    }
   });
 
   // Canvas: fog painted → persist via REST (broadcasts FOG_UPDATED to all clients)
@@ -676,11 +932,14 @@ function wireDmControls(session, renderer, code) {
     } catch (err) { toast(err.message || 'Failed to clear zones', 'error'); }
   });
 
-  // Tool switching also shows zone type picker
+  // Tool switching shows/hides zone picker and spell panel
   document.querySelectorAll('[id^="tool-"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const zonePicker = document.getElementById('zone-type-picker');
-      if (zonePicker) zonePicker.style.display = btn.id === 'tool-zone' ? 'block' : 'none';
+      const zonePicker  = document.getElementById('zone-type-picker');
+      const spellPanel  = document.getElementById('spell-overlay-panel');
+      if (zonePicker) zonePicker.style.display  = btn.id === 'tool-zone'  ? 'block' : 'none';
+      if (spellPanel) spellPanel.style.display   = btn.id === 'tool-spell' ? 'block' : 'none';
+      if (btn.id !== 'tool-spell') renderer.cancelSpellPlacement();
     });
   });
 
@@ -701,6 +960,87 @@ function wireDmControls(session, renderer, code) {
   // Observer rotation: DM controls the orientation of the observer window
   document.getElementById('btn-rotate-left')?.addEventListener('click',  () => ws.send('ROTATE_MAP', { direction: 'left' }));
   document.getElementById('btn-rotate-right')?.addEventListener('click', () => ws.send('ROTATE_MAP', { direction: 'right' }));
+
+  // ── Spell overlay wiring ─────────────────────────────────────────
+
+  // Preset selector auto-fills shape/label/color/size fields
+  document.getElementById('spell-preset')?.addEventListener('change', (e) => {
+    if (!e.target.value) return;
+    try {
+      const p = JSON.parse(e.target.value);
+      document.getElementById('spell-shape').value = p.shape;
+      document.getElementById('spell-label').value = p.label;
+      document.getElementById('spell-color').value = p.color;
+      document.getElementById('spell-size').value  = p.sizeFt;
+    } catch { /* ignore parse errors */ }
+  });
+
+  // Active overlay list — rendered from renderer.spellOverlays
+  const refreshSpellOverlayList = () => {
+    const list = document.getElementById('spell-overlay-list');
+    if (!list) return;
+    const overlays = renderer.spellOverlays;
+    if (!overlays.length) {
+      list.innerHTML = '<div style="font-size:0.72rem;color:var(--text-muted)">No active overlays</div>';
+      return;
+    }
+    list.innerHTML = overlays.map(o => `
+      <div style="display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);
+                  background:var(--bg-raised);border:1px solid var(--border-dim);border-radius:var(--radius-sm)">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                     background:${esc(o.color || '#888')};flex-shrink:0"></span>
+        <span style="flex:1;font-size:0.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${esc(o.label || o.shape)} <span style="color:var(--text-muted)">${o.sizeFt}ft</span>
+          ${o.visibility === 'dm_only' ? '<span style="color:var(--gold);font-size:0.65rem"> DM</span>' : ''}
+        </span>
+        <button class="btn btn-ghost" data-remove-overlay="${esc(o.id)}"
+                style="font-size:0.7rem;padding:2px 6px;color:var(--red-bright)" title="Remove">✕</button>
+      </div>`).join('');
+
+    list.querySelectorAll('[data-remove-overlay]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const overlayId = btn.dataset.removeOverlay;
+        try {
+          await sessions.removeSpellOverlay(session.id, overlayId);
+          renderer.removeSpellOverlay(overlayId);
+          refreshSpellOverlayList();
+          toast('Overlay removed', 'info');
+        } catch (err) { toast(err.message || 'Failed to remove overlay', 'error'); }
+      });
+    });
+  };
+
+  // Place on Map button — enters placement mode
+  document.getElementById('btn-place-spell')?.addEventListener('click', () => {
+    const shape      = document.getElementById('spell-shape')?.value || 'circle';
+    const label      = document.getElementById('spell-label')?.value.trim() || '';
+    const color      = document.getElementById('spell-color')?.value || '#e25822';
+    const sizeFt     = parseInt(document.getElementById('spell-size')?.value, 10) || 20;
+    const visibility = document.getElementById('spell-visibility')?.value || 'everyone';
+    const template   = { shape, label, color, sizeFt, visibility };
+
+    const needsDir = shape === 'cone' || shape === 'line';
+    toast(
+      needsDir
+        ? 'Click to set origin, then click to set direction. Escape to cancel.'
+        : 'Click on the map to place. Escape to cancel.',
+      'info', 5000
+    );
+
+    renderer.startSpellPlacement(template, async (overlay) => {
+      try {
+        await sessions.addSpellOverlay(session.id, overlay);
+        renderer.addSpellOverlay(overlay);   // optimistic; dedup guard prevents double-add from WS
+        refreshSpellOverlayList();
+        toast(`${overlay.label || 'Overlay'} placed!`, 'success');
+      } catch (err) { toast(err.message || 'Failed to place overlay', 'error'); }
+    });
+  });
+
+  // Show initial overlay list (in case overlays were loaded on page init)
+  refreshSpellOverlayList();
+
+  return { refreshSpellOverlayList };
 }
 
 // ── Token detail panel (DM) ───────────────────────────────────────

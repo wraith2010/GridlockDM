@@ -293,6 +293,74 @@ public class SessionService {
         return session;
     }
 
+    // ── Spell Overlays ────────────────────────────────────────────────────────
+
+    @Transactional
+    public Session addSpellOverlay(UUID sessionId, User user, Map<String, Object> overlay) {
+        Session session = requireSession(sessionId);
+        requireParticipant(session, user);
+        // Stamp server-side so clients cannot forge ownership
+        overlay.put("createdBy", user.getId().toString());
+        // Players may only create 'everyone' overlays (DM can also create 'dm_only')
+        if (!isDmOrParticipant(session, user) || (!session.getDm().getId().equals(user.getId())
+                && "dm_only".equals(overlay.get("visibility")))) {
+            overlay.put("visibility", "everyone");
+        }
+        if (session.getActiveOverlays() == null) session.setActiveOverlays(new java.util.ArrayList<>());
+        session.getActiveOverlays().add(overlay);
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+        // dm_only overlays are not broadcast — creator adds locally via REST callback
+        String vis = (String) overlay.getOrDefault("visibility", "everyone");
+        if (!"dm_only".equals(vis)) {
+            broadcast(session.getInviteCode(), "SPELL_OVERLAY_ADDED", overlay);
+        }
+        return session;
+    }
+
+    @Transactional
+    public Session removeSpellOverlay(UUID sessionId, User user, String overlayId) {
+        Session session = requireSession(sessionId);
+        requireParticipant(session, user);
+        boolean isDm = session.getDm().getId().equals(user.getId());
+        // Find the overlay first to check ownership and visibility
+        Map<String, Object> found = session.getActiveOverlays() == null ? null :
+                session.getActiveOverlays().stream()
+                        .filter(o -> overlayId.equals(o.get("id")))
+                        .findFirst().orElse(null);
+        if (found == null) return session;  // already gone — no-op
+        // Players can only remove their own overlays; DM can remove any
+        if (!isDm && !user.getId().toString().equals(found.get("createdBy"))) {
+            throw new ForbiddenException("You can only remove your own overlays");
+        }
+        boolean wasPublic = !"dm_only".equals(found.get("visibility"));
+        session.getActiveOverlays().remove(found);
+        session.setUpdatedAt(Instant.now());
+        sessionRepo.save(session);
+        if (wasPublic) broadcast(session.getInviteCode(), "SPELL_OVERLAY_REMOVED", Map.of("id", overlayId));
+        return session;
+    }
+
+    // ── Token Movement ────────────────────────────────────────────────────────
+
+    @Transactional
+    public void moveToken(String sessionCode, User user, UUID tokenId, double x, double y) {
+        Session session = getSessionByCode(sessionCode);
+        // Find the SessionCharacter being moved
+        SessionCharacter sc = sessionCharRepo.findBySessionIdAndActiveTrue(session.getId())
+                .stream().filter(c -> c.getId().equals(tokenId)).findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("Token not found: " + tokenId));
+        // DM can move any token; players can only move their own
+        boolean isDm = session.getDm().getId().equals(user.getId());
+        if (!isDm && !sc.getPlayer().getId().equals(user.getId())) {
+            throw new ForbiddenException("You can only move your own token");
+        }
+        sc.setPositionX(x);
+        sc.setPositionY(y);
+        sessionCharRepo.save(sc);
+        broadcast(session.getInviteCode(), "TOKEN_MOVED", Map.of("tokenId", tokenId, "x", x, "y", y));
+    }
+
     // ── Queries ───────────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -350,6 +418,19 @@ public class SessionService {
         }
     }
 
+    /** True if user is the DM or has an active SessionCharacter in this session. */
+    private boolean isDmOrParticipant(Session session, User user) {
+        if (session.getDm().getId().equals(user.getId())) return true;
+        return sessionCharRepo.findBySessionIdAndActiveTrue(session.getId())
+                .stream().anyMatch(sc -> sc.getPlayer().getId().equals(user.getId()));
+    }
+
+    private void requireParticipant(Session session, User user) {
+        if (!isDmOrParticipant(session, user)) {
+            throw new ForbiddenException("You must be a session participant to perform this action");
+        }
+    }
+
     private void broadcast(String sessionCode, String type, Object payload) {
         messaging.convertAndSend(
                 "/topic/session/" + sessionCode,
@@ -400,6 +481,7 @@ public class SessionService {
     public record SessionCharacterDto(
             UUID   id,
             UUID   characterId,
+            UUID   playerId,
             String characterName,
             String playerName,
             String tokenType,
@@ -415,6 +497,7 @@ public class SessionService {
             return new SessionCharacterDto(
                     sc.getId(),
                     c.getId(),
+                    sc.getPlayer().getId(),
                     c.getName(),
                     sc.getPlayer().getDisplayName(),
                     sc.getTokenType().name(),

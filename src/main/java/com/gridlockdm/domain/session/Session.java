@@ -7,6 +7,7 @@ import lombok.*;
 import org.hibernate.annotations.Type;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -60,6 +61,12 @@ public class Session {
     @Type(JsonType.class)
     @Column(name = "zones", columnDefinition = "jsonb")
     private Map<String, String> zones;
+
+    /** DM-placed spell/AoE overlays — list of overlay descriptor objects */
+    @Type(JsonType.class)
+    @Column(name = "active_overlays", columnDefinition = "jsonb")
+    @Builder.Default
+    private List<Map<String, Object>> activeOverlays = new java.util.ArrayList<>();
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @Builder.Default
