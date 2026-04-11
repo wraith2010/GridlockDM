@@ -23,9 +23,10 @@ export class Renderer {
     };
 
     // Viewport state (local — not synced to other clients)
-    this.zoom  = 1;
-    this.panX  = 0;
-    this.panY  = 0;
+    this.zoom     = 1;
+    this.panX     = 0;
+    this.panY     = 0;
+    this.rotation = 0;  // degrees: 0 | 90 | 180 | 270 (local display only)
 
     // Grid config (set when map is loaded)
     this.gridConfig = null;   // { originX, originY, cellSizePx, cols, rows, confidence }
@@ -169,6 +170,18 @@ export class Renderer {
     this.panY = cy - mapCy * newZoom;
   }
 
+  /** Rotate the local view 90° counter-clockwise */
+  rotateLeft() {
+    this.rotation = (this.rotation + 270) % 360;
+    this._centerMap();
+  }
+
+  /** Rotate the local view 90° clockwise */
+  rotateRight() {
+    this.rotation = (this.rotation + 90) % 360;
+    this._centerMap();
+  }
+
   /** Update fog cells — cells is an object { "x,y": true/false } */
   updateFog(cells) {
     Object.entries(cells).forEach(([key, revealed]) => {
@@ -236,6 +249,15 @@ export class Renderer {
     ctx.save();
     ctx.translate(panX, panY);
     ctx.scale(zoom, zoom);
+
+    // Apply local rotation around the map center (display-only, does not affect game state)
+    if (this.rotation !== 0 && this.mapImage) {
+      const cx = this.mapImage.width  / 2;
+      const cy = this.mapImage.height / 2;
+      ctx.translate(cx, cy);
+      ctx.rotate(this.rotation * Math.PI / 180);
+      ctx.translate(-cx, -cy);
+    }
 
     // 1. Map image
     if (this.mapImage) {
@@ -693,7 +715,21 @@ export class Renderer {
   // ── Coordinate helpers ──────────────────────────────────────────
 
   _screenToWorld(sx, sy) {
-    return { x: (sx - this.panX) / this.zoom, y: (sy - this.panY) / this.zoom };
+    let wx = (sx - this.panX) / this.zoom;
+    let wy = (sy - this.panY) / this.zoom;
+    // Undo rotation: apply -rotation around the map center
+    if (this.rotation !== 0 && this.mapImage) {
+      const cx  = this.mapImage.width  / 2;
+      const cy  = this.mapImage.height / 2;
+      const rad = -this.rotation * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const dx  = wx - cx;
+      const dy  = wy - cy;
+      wx = cx + dx * cos - dy * sin;
+      wy = cy + dx * sin + dy * cos;
+    }
+    return { x: wx, y: wy };
   }
 
   _worldToCell(wx, wy) {
@@ -732,11 +768,17 @@ export class Renderer {
 
   _centerMap() {
     if (!this.mapImage) return;
-    const scaleX = this.canvas.width  / this.mapImage.width;
-    const scaleY = this.canvas.height / this.mapImage.height;
-    this.zoom    = this.options.fitToScreen ? Math.min(scaleX, scaleY) : 1;
-    this.panX    = (this.canvas.width  - this.mapImage.width  * this.zoom) / 2;
-    this.panY    = (this.canvas.height - this.mapImage.height * this.zoom) / 2;
+    const { width: w, height: h } = this.mapImage;
+    // When rotated 90°/270°, the visual bounding box is h×w instead of w×h
+    const isSwapped = (this.rotation / 90) % 2 !== 0;
+    const visW = isSwapped ? h : w;
+    const visH = isSwapped ? w : h;
+    const scaleX = this.canvas.width  / visW;
+    const scaleY = this.canvas.height / visH;
+    this.zoom = this.options.fitToScreen ? Math.min(scaleX, scaleY) : 1;
+    // Center on the map's midpoint (invariant under rotation)
+    this.panX = this.canvas.width  / 2 - (w / 2) * this.zoom;
+    this.panY = this.canvas.height / 2 - (h / 2) * this.zoom;
   }
 
   _loadTokenAvatar(id, url) {

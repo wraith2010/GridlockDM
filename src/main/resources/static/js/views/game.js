@@ -184,6 +184,12 @@ function bindSessionEvents(renderer, code, role) {
     renderer.loadMap(mapImageUrl, gridConfig);
   });
 
+  ws.on('MAP_ROTATED', ({ direction }) => {
+    if (role !== 'observer') return;
+    if (direction === 'left')  renderer.rotateLeft();
+    if (direction === 'right') renderer.rotateRight();
+  });
+
   ws.on('GRID_UPDATED', (gridConfig) => {
     renderer.updateGridConfig(gridConfig);
     updateGridPanel(gridConfig);
@@ -278,6 +284,10 @@ function dmShell(code) {
           <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3);margin-top:var(--sp-1)" id="btn-edit-grid">
             ⊞ Edit Grid
           </button>
+          <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-1)">
+            <button class="btn btn-ghost" style="flex:1;font-size:0.7rem" id="btn-rotate-left"  title="Rotate observer view 90° counter-clockwise">↺ Rotate</button>
+            <button class="btn btn-ghost" style="flex:1;font-size:0.7rem" id="btn-rotate-right" title="Rotate observer view 90° clockwise">↻ Rotate</button>
+          </div>
         </div>
 
         <!-- Fog + Zone controls -->
@@ -687,6 +697,10 @@ function wireDmControls(session, renderer, code) {
   document.getElementById('btn-edit-grid')?.addEventListener('click', () => {
     openGridPanel(session, renderer);
   });
+
+  // Observer rotation: DM controls the orientation of the observer window
+  document.getElementById('btn-rotate-left')?.addEventListener('click',  () => ws.send('ROTATE_MAP', { direction: 'left' }));
+  document.getElementById('btn-rotate-right')?.addEventListener('click', () => ws.send('ROTATE_MAP', { direction: 'right' }));
 }
 
 // ── Token detail panel (DM) ───────────────────────────────────────
