@@ -2,6 +2,20 @@
 // Coordinate system: all game state is in grid-cell units.
 // Pixel positions are derived at render time from the viewport transform.
 
+// UUID generator that works in both secure (HTTPS/localhost) and insecure contexts.
+// crypto.randomUUID() is only available in secure contexts.
+function _uuid() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // RFC4122 v4 fallback using Math.random (sufficient for client-side overlay IDs)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export const ZONE_TYPES = {
   difficult: { color: '#8B4513', label: 'Difficult Terrain' },
   fire:      { color: '#FF4500', label: 'Fire' },
@@ -548,7 +562,7 @@ export class Renderer {
   }
 
   _finalizeSpellOverlay(template, originPx, direction) {
-    return { id: crypto.randomUUID(), ...template, origin: { x: originPx.x, y: originPx.y }, direction };
+    return { id: _uuid(), ...template, origin: { x: originPx.x, y: originPx.y }, direction };
   }
 
   _drawOverlays() {
