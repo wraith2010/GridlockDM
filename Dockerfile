@@ -8,7 +8,7 @@ RUN addgroup -S gridlock && adduser -S gridlock -G gridlock && \
 
 USER gridlock
 
-COPY --chown=gridlock:gridlock gridlockdm*.jar app.jar
+COPY --chown=gridlock:gridlock gridlockdm.jar app.jar
 
 EXPOSE 8080
 
