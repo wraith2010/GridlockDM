@@ -820,6 +820,7 @@ function wirePlayerSpellControls(session, renderer) {
 
     renderer.startSpellPlacement(template, async (overlay) => {
       try {
+        overlay.createdBy = getState('user')?.id;   // stamp locally so list filter works before WS echo
         await sessions.addSpellOverlay(session.id, overlay);
         renderer.addSpellOverlay(overlay);   // optimistic add; WS event deduplicates
         refreshSpellOverlayList();
@@ -881,6 +882,10 @@ function wireDmControls(session, renderer, code) {
   document.getElementById('btn-observer-link')?.addEventListener('click', async () => {
     try {
       const res = await sessions.observerLink(session.id, 'Table TV');
+      if (!res?.observerToken) {
+        toast('Failed to generate observer link — no token returned', 'error');
+        return;
+      }
       const url = `${window.location.origin}/#/session/${code}/observe?token=${res.observerToken}`;
       await navigator.clipboard.writeText(url);
       toast('Observer link copied to clipboard! 📺', 'success');
@@ -1053,6 +1058,7 @@ function wireDmControls(session, renderer, code) {
 
     renderer.startSpellPlacement(template, async (overlay) => {
       try {
+        overlay.createdBy = getState('user')?.id;   // stamp locally so list shows overlay before WS echo
         await sessions.addSpellOverlay(session.id, overlay);
         renderer.addSpellOverlay(overlay);   // optimistic; dedup guard prevents double-add from WS
         refreshSpellOverlayList();

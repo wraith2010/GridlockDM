@@ -187,6 +187,7 @@ public class SessionService {
      * DM generates a read-only observer token for a TV/projector view.
      * The token is a signed JWT; no DB lookup needed to validate it.
      */
+    @Transactional(readOnly = true)
     public String generateObserverToken(UUID sessionId, User dm, String label) {
         Session session = requireSession(sessionId);
         requireDm(session, dm);
