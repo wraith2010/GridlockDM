@@ -427,7 +427,7 @@ public class SessionService {
     }
 
     private void requireDm(Session session, User user) {
-        if (!session.getDm().getId().equals(user.getId())) {
+        if (user == null || !session.getDm().getId().equals(user.getId())) {
             throw new ForbiddenException("Only the DM can perform this action");
         }
     }

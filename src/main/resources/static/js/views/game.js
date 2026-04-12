@@ -882,14 +882,18 @@ function wireDmControls(session, renderer, code) {
   document.getElementById('btn-observer-link')?.addEventListener('click', async () => {
     try {
       const res = await sessions.observerLink(session.id, 'Table TV');
-      if (!res?.observerToken) {
+      if (!res || !res.observerToken) {
+        console.error('[Observer Link] API returned:', res);
         toast('Failed to generate observer link — no token returned', 'error');
         return;
       }
       const url = `${window.location.origin}/#/session/${code}/observe?token=${res.observerToken}`;
       await navigator.clipboard.writeText(url);
       toast('Observer link copied to clipboard! 📺', 'success');
-    } catch (err) { toast(err.message || 'Failed to generate link', 'error'); }
+    } catch (err) {
+      console.error('[Observer Link] Error:', err);
+      toast(err.message || 'Failed to generate link', 'error');
+    }
   });
 
   // Copy session code
