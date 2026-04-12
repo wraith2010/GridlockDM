@@ -883,22 +883,42 @@ function wireDmControls(session, renderer, code) {
     try {
       const res = await sessions.observerLink(session.id, 'Table TV');
       if (!res || !res.observerToken) {
-        console.error('[Observer Link] API returned:', res);
         toast('Failed to generate observer link — no token returned', 'error');
         return;
       }
       const url = `${window.location.origin}/#/session/${code}/observe?token=${res.observerToken}`;
-      await navigator.clipboard.writeText(url);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        // Fallback for non-HTTPS contexts where clipboard API is unavailable
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
       toast('Observer link copied to clipboard! 📺', 'success');
-    } catch (err) {
-      console.error('[Observer Link] Error:', err);
-      toast(err.message || 'Failed to generate link', 'error');
-    }
+    } catch (err) { toast(err.message || 'Failed to generate link', 'error'); }
   });
 
   // Copy session code
   document.getElementById('session-code-display')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(code).then(() => toast(`Code ${code} copied!`, 'info'));
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(code).then(() => toast(`Code ${code} copied!`, 'info'));
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast(`Code ${code} copied!`, 'info');
+    }
   });
 
   // Map upload
