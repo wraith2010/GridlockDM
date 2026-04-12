@@ -22,6 +22,8 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Calls the Claude API to detect grid lines in a battle map image.
@@ -38,17 +40,45 @@ public class GridDetectionService {
 
     private final ObjectMapper objectMapper;
 
-    private static final String PROMPT = """
+    /** Matches grid-size hints in filenames like "map_72x21.jpg", "dungeon 24x18.png", "grid40x30". */
+    private static final Pattern FILENAME_GRID_PATTERN =
+            Pattern.compile("(?<!\\d)(\\d{1,3})\\s*[xX]\\s*(\\d{1,3})(?!\\d)");
+
+    private static final String PROMPT_WITH_HINT = """
+        Analyze this tabletop RPG battle map image.
+        The filename is: %s
+        The filename indicates the grid is %d columns by %d rows. TRUST THIS — do not recount.
+        Your ONLY job is to measure the four margins (in pixels) from each image edge
+        to the first/last grid line.
+
+        Grid lines may be subtle (white, light gray, dark gray). Look along each edge
+        for where the grid actually begins and ends — there is often a decorative
+        border or blank margin.
+
+        Return ONLY this JSON, with the cols and rows values I gave you:
+        {
+          "hasGrid": true,
+          "marginLeft": <int px>,
+          "marginRight": <int px>,
+          "marginTop": <int px>,
+          "marginBottom": <int px>,
+          "cols": %d,
+          "rows": %d,
+          "confidence": <0.0 to 1.0 for margin accuracy>
+        }
+
+        If you genuinely cannot see any grid lines at all:
+        {"hasGrid":false,"marginLeft":0,"marginRight":0,"marginTop":0,"marginBottom":0,"cols":%d,"rows":%d,"confidence":0.0}
+        """;
+
+    private static final String PROMPT_NO_HINT = """
         Analyze this tabletop RPG battle map image and detect the grid overlay.
         A grid consists of evenly-spaced horizontal and vertical lines.
         Grid lines are often subtle — white, light gray, dark gray, or slightly different from the background.
         Look carefully along all four edges for where the grid begins and ends.
         Columns and rows are almost never equal in count.
 
-        The image filename may contain grid size hints (e.g. "map_40x30.jpg" or "dungeon_24x18_.png").
-        If the filename contains a pattern like NxM, treat that as a strong prior for cols and rows,
-        but still verify visually and override if the image clearly contradicts it.
-        The filename provided is: %s
+        The filename provided is: %s (no grid size hint detected).
 
         The image may have a decorative border or blank margin before the first grid line.
         Measure the margin (in pixels) on each side: the distance from the image edge to the nearest grid line.
@@ -79,6 +109,22 @@ public class GridDetectionService {
         If there is no grid: {"hasGrid":false,"marginLeft":0,"marginRight":0,"marginTop":0,"marginBottom":0,"cols":20,"rows":15,"confidence":0.0}
         """;
 
+    /** Extract [cols, rows] from a filename if it contains a recognizable NxM pattern. */
+    static int[] parseGridFromFilename(String filename) {
+        if (filename == null) return null;
+        Matcher m = FILENAME_GRID_PATTERN.matcher(filename);
+        int[] last = null;
+        // Take the LAST match — the convention is dimensions at the end of the name
+        while (m.find()) {
+            int cols = Integer.parseInt(m.group(1));
+            int rows = Integer.parseInt(m.group(2));
+            if (cols >= 2 && cols <= 200 && rows >= 2 && rows <= 200) {
+                last = new int[]{cols, rows};
+            }
+        }
+        return last;
+    }
+
     /**
      * Detect grid from an image file.
      *
@@ -99,8 +145,12 @@ public class GridDetectionService {
                 return null;
             }
 
-            String base64 = Base64.getEncoder().encodeToString(encodeProcessed(raw));
-            String prompt = String.format(PROMPT, imagePath.getFileName().toString());
+            String base64   = Base64.getEncoder().encodeToString(encodeProcessed(raw));
+            String filename = imagePath.getFileName().toString();
+            int[]  hinted   = parseGridFromFilename(filename);
+            String prompt   = hinted != null
+                    ? String.format(PROMPT_WITH_HINT, filename, hinted[0], hinted[1], hinted[0], hinted[1], hinted[0], hinted[1])
+                    : String.format(PROMPT_NO_HINT, filename);
 
             RestClient client = RestClient.builder()
                     .baseUrl("https://api.anthropic.com")
