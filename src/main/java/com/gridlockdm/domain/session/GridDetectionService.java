@@ -145,7 +145,9 @@ public class GridDetectionService {
                 return null;
             }
 
-            String base64   = Base64.getEncoder().encodeToString(encodeProcessed(raw));
+            byte[] processed = encodeProcessed(raw);
+            writeDebugImage(imagePath, processed);
+            String base64   = Base64.getEncoder().encodeToString(processed);
             String filename = imagePath.getFileName().toString();
             int[]  hinted   = parseGridFromFilename(filename);
             String prompt   = hinted != null
@@ -194,16 +196,17 @@ public class GridDetectionService {
      * before sending to the vision API. Always outputs PNG for lossless encoding.
      */
     private byte[] encodeProcessed(BufferedImage src) throws IOException {
-        // Convert to RGB — strips alpha and avoids ConvolveOp edge cases
-        BufferedImage rgb = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = rgb.createGraphics();
+        // Convert to grayscale — grid lines are almost always low-chroma (white/gray/black),
+        // so removing color distractions improves signal-to-noise for the vision model.
+        BufferedImage gray = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g = gray.createGraphics();
         g.drawImage(src, 0, 0, null);
         g.dispose();
 
         // Sharpen: makes 1-2px grid lines crisper against textured backgrounds
         float[] sharpenKernel = { 0, -1, 0, -1, 5, -1, 0, -1, 0 };
         BufferedImage sharpened = new ConvolveOp(
-                new Kernel(3, 3, sharpenKernel), ConvolveOp.EDGE_NO_OP, null).filter(rgb, null);
+                new Kernel(3, 3, sharpenKernel), ConvolveOp.EDGE_NO_OP, null).filter(gray, null);
 
         // Contrast boost: helps subtle lines stand out from background noise
         BufferedImage enhanced = new RescaleOp(1.2f, 15f, null).filter(sharpened, null);
@@ -211,6 +214,23 @@ public class GridDetectionService {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         ImageIO.write(enhanced, "png", baos);
         return baos.toByteArray();
+    }
+
+    /**
+     * Write the preprocessed image sent to Claude alongside the original, for debugging.
+     * Suffix: .debug.png. Failures are logged but do not interrupt detection.
+     */
+    private void writeDebugImage(Path originalPath, byte[] pngBytes) {
+        try {
+            String name      = originalPath.getFileName().toString();
+            int    dot       = name.lastIndexOf('.');
+            String base      = dot > 0 ? name.substring(0, dot) : name;
+            Path   debugPath = originalPath.resolveSibling(base + ".debug.png");
+            java.nio.file.Files.write(debugPath, pngBytes);
+            log.info("Grid detection debug image written: {}", debugPath);
+        } catch (IOException e) {
+            log.warn("Could not write grid detection debug image: {}", e.getMessage());
+        }
     }
 
     private Map<String, Object> parseResponse(String responseJson, int imgW, int imgH) throws Exception {

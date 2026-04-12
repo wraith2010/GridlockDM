@@ -430,6 +430,10 @@ function dmShell(code) {
           <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3);margin-top:var(--sp-1)" id="btn-edit-grid">
             ⊞ Edit Grid
           </button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start;gap:var(--sp-3);margin-top:var(--sp-1);font-size:0.75rem" id="btn-download-debug"
+                  title="Download the preprocessed image sent to Claude for grid detection">
+            🔍 Debug Image
+          </button>
           <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-1)">
             <button class="btn btn-ghost" style="flex:1;font-size:0.7rem" id="btn-rotate-left"  title="Rotate observer view 90° counter-clockwise">↺ Rotate</button>
             <button class="btn btn-ghost" style="flex:1;font-size:0.7rem" id="btn-rotate-right" title="Rotate observer view 90° clockwise">↻ Rotate</button>
@@ -1008,6 +1012,21 @@ function wireDmControls(session, renderer, code) {
   // Grid config panel
   document.getElementById('btn-edit-grid')?.addEventListener('click', () => {
     openGridPanel(session, renderer);
+  });
+
+  // Debug image: download the preprocessed grayscale version sent to Claude
+  document.getElementById('btn-download-debug')?.addEventListener('click', () => {
+    const current = getState('session') || session;
+    const mapUrl  = current.mapImageUrl;
+    if (!mapUrl) { toast('No map uploaded yet', 'info'); return; }
+    // Derive debug URL by swapping the extension for .debug.png
+    const debugUrl = mapUrl.replace(/\.[^./]+$/, '.debug.png');
+    const a = document.createElement('a');
+    a.href     = debugUrl;
+    a.download = debugUrl.split('/').pop();
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   });
 
   // Observer rotation: DM controls the orientation of the observer window
